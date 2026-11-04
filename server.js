@@ -52,15 +52,15 @@ const OPS = {
     const type = { '1b': 'pdfa-1', '2b': 'pdfa-2', '3b': 'pdfa-3' }[q.level] || 'pdfa-2';
     await run(BIN.ocrmypdf, ['--skip-text', '--tesseract-timeout', '0', '--output-type', type, i, o], { timeout: 30 * 60e3 });
   } },
-  protect: { needs: ['qpdf'], ext: 'pdf', async run(i, o, q, h) {
+  protect: { needs: ['qpdf'], ext: 'pdf', async run(i, o, q, h, dir) {
     const pw = pwd(h['x-password']);
     if (!pw) throw new UserError('A password is required.');
-    await qpdf(['--encrypt', pw, pwd(h['x-owner-password']) || pw, '256', '--', i, o]);
+    await qpdf(await argFile(dir, ['--encrypt', pw, pwd(h['x-owner-password']) || pw, '256', '--', i, o]));
   } },
-  unlock: { needs: ['qpdf'], ext: 'pdf', async run(i, o, q, h) {
+  unlock: { needs: ['qpdf'], ext: 'pdf', async run(i, o, q, h, dir) {
     const args = ['--decrypt', i, o];
     if (h['x-password']) args.unshift(`--password=${pwd(h['x-password'])}`);
-    try { await qpdf(args); } catch (e) {
+    try { await qpdf(await argFile(dir, args)); } catch (e) {
       if (/invalid password/i.test(e.stderr || '')) throw new UserError('Wrong password for this file.');
       throw e;
     }
@@ -73,7 +73,16 @@ const OPS = {
   pdf2excel: { needs: ['python:pdfplumber', 'python:openpyxl'], ext: 'xlsx', async run(i, o) { await run(BIN.python, [PY, 'excel', i, o], { timeout: 30 * 60e3 }); } },
   pdf2ppt: { needs: ['gs', 'python:pptx'], ext: 'pptx', async run(i, o) { await run(BIN.python, [PY, 'ppt', i, o], { timeout: 30 * 60e3 }); } },
   html2pdf: { needs: ['chrome'], ext: 'pdf', input: 'keep', optionalBody: true, async run(i, o, q, h, dir) {
-    let target = i && `file://${i}`;
+    let target = null;
+    if (i) {
+      // Untrusted HTML on a file:// origin could pull other local files into the PDF: lock it down.
+      const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
+      let html = await fs.readFile(i, 'utf8');
+      html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + csp)
+        : /<!doctype[^>]*>/i.test(html) ? html.replace(/<!doctype[^>]*>/i, (m) => m + csp) : csp + html;
+      await fs.writeFile(i, html);
+      target = `file://${i}`; // default-src 'none' also blocks scripts (Chrome's scriptEnabled flag breaks printing)
+    }
     if (q.url) {
       const u = new URL(q.url); // throws on garbage
       if (!/^https?:$/.test(u.protocol)) throw new UserError('Only http(s) URLs are allowed.');
@@ -88,6 +97,14 @@ const OPS = {
 class UserError extends Error {}
 // Passwords arrive URI-encoded so non-ASCII survives HTTP headers.
 const pwd = (v) => (v ? decodeURIComponent(v) : '');
+
+// qpdf reads "@file" as one argument per line; keeps passwords out of `ps` output.
+async function argFile(dir, args) {
+  if (args.some((a) => /[\r\n]/.test(a))) throw new UserError('Passwords cannot contain line breaks.');
+  const f = path.join(dir, 'qpdf-args');
+  await fs.writeFile(f, args.join('\n') + '\n', { mode: 0o600 });
+  return [`@${f}`];
+}
 
 async function qpdf(args) {
   try { await run(BIN.qpdf, args); } catch (e) {

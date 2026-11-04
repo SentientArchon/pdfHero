@@ -111,7 +111,12 @@ test('redact: find text removes it', async () => {
   await open('redact', ['a.pdf']); await page.waitForSelector('.stage canvas');
   await page.fill('[aria-label="Text to find and redact"]', 'Secret'); await page.click('text=Mark all matches');
   await page.waitForSelector('text=/5 match/');
-  const t = text((await run()).buf); assert.doesNotMatch(t, /Secret/);
+  const { buf } = await run();
+  assert.doesNotMatch(text(buf), /Secret/);
+  // and not hiding in unreachable objects: decompress every stream and grep the raw bytes
+  const f = path.join(os.tmpdir(), `pdfhero-raw-${Date.now()}.pdf`); fs.writeFileSync(f, buf);
+  const raw = execFileSync('qpdf', ['--qdf', '--object-streams=disable', '--decode-level=all', f, '-'], { maxBuffer: 1 << 28 }).toString('latin1'); fs.rmSync(f);
+  assert.doesNotMatch(raw, /Secret|536563726574/i); // pdf-lib writes text as hex strings
 });
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
 test('compare visual', async () => { await open('compare', ['a.pdf', 'b.pdf']); await page.click('.seg-btn:text("Visual overlay")'); assert.ok(isZip((await run()).buf)); });
@@ -136,6 +141,13 @@ test('protect: mismatched passwords', async () => { await open('protect', ['a.pd
 for (const [id, file] of [['word-to-pdf', 'doc.docx'], ['excel-to-pdf', 'sheet.xlsx'], ['powerpoint-to-pdf', 'deck.pptx'], ['html-to-pdf', 'page.html']]) {
   test(id, { timeout: 240e3 }, async () => { await open(id, [file]); assert.ok((await pdf((await run()).buf)).getPageCount() >= 1); });
 }
+test('html file cannot read other local files', async () => {
+  fs.writeFileSync(FIX + 'evil.html', '<!doctype html><p>visible</p><iframe src="file:///etc/hosts" width=600 height=400></iframe><script>document.write("JSRAN")</script>');
+  await open('html-to-pdf', ['evil.html']);
+  const t = text((await run()).buf);
+  fs.rmSync(FIX + 'evil.html');
+  assert.match(t, /visible/); assert.doesNotMatch(t, /localhost|JSRAN/);
+});
 for (const id of ['pdf-to-word', 'pdf-to-excel', 'pdf-to-powerpoint']) {
   test(id, { timeout: 240e3 }, async () => { await open(id, ['a.pdf']); assert.ok(isZip((await run()).buf)); });
 }

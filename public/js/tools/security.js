@@ -1,4 +1,4 @@
-import { h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError } from '../lib.js';
+import { h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError, PDFDocument } from '../lib.js';
 import { serverTool, pageLines } from './convert.js';
 import { pageEditor, applyItems } from '../editor.js';
 
@@ -65,10 +65,13 @@ export default [
     async run([f], o, ctx) {
       const items = ctx.custom.ed.state.items.filter((i) => i.type === 'redact');
       if (!items.length) throw new UserError('Mark at least one area to redact.');
-      const doc = await loadPdfLib(f);
+      // Build a fresh document: saving the source would keep the removed pages' objects in the file.
+      const src = await loadPdfLib(f);
       const js = await loadPdfJs(f);
-      const pagesHit = [...new Set(items.map((i) => i.page))].sort((a, b) => a - b);
-      for (const n of pagesHit) {
+      const doc = await PDFDocument.create();
+      const hit = new Set(items.map((i) => i.page));
+      for (let n = 1; n <= src.getPageCount(); n++) {
+        if (!hit.has(n)) { const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
         ctx.progress(`Flattening page ${n}…`);
         const page = await js.getPage(n);
         const k = +o.dpi / 72;
@@ -77,11 +80,12 @@ export default [
         for (const it of items.filter((i) => i.page === n)) g.fillRect(it.x * k, it.y * k, it.w * k, it.h * k);
         const img = await embedImage(doc, await canvasBlob(c, 'image/jpeg', 0.9));
         const vp = page.getViewport({ scale: 1 });
-        doc.removePage(n - 1);
-        doc.insertPage(n - 1, [vp.width, vp.height]).drawImage(img, { x: 0, y: 0, width: vp.width, height: vp.height });
+        doc.addPage([vp.width, vp.height]).drawImage(img, { x: 0, y: 0, width: vp.width, height: vp.height });
         c.width = 0;
       }
-      if (o.meta) { doc.setTitle(''); doc.setAuthor(''); doc.setSubject(''); doc.setKeywords([]); doc.setCreator(''); doc.setProducer(''); }
+      if (!o.meta) {
+        for (const k of ['Title', 'Author', 'Subject', 'Creator']) { const v = src[`get${k}`](); if (v) doc[`set${k}`](v); }
+      }
       return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: await pdfBlob(doc) }];
     },
   },
