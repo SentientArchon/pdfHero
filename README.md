@@ -8,7 +8,13 @@ Your own PDF toolbox: 31 tools (merge, split, compress, OCR, convert to/from Wor
 
 ## Use it
 
-Hosted on GitHub Pages: pushing to `main` builds and deploys it (see `.github/workflows/pages.yml`).
+Live at https://sentientarchon.github.io/pdfHero/ (GitHub Pages, served from the `gh-pages` branch).
+
+To publish changes:
+
+```bash
+npm run deploy   # builds the site and pushes it to gh-pages
+```
 
 To run it locally:
 
