@@ -137,29 +137,71 @@ export default [
 
 /**
  * Give a page its own Resources holding only names its content uses, before copying it.
- * Pages often share one Resources dict; without this, an image or font used only on a
- * redacted page would be copied along with an untouched page and survive in the file.
+ * Pages often share Resources; without this, an image or font used only on a redacted page
+ * would be copied along with an untouched page and survive in the file. Recurses into
+ * Form XObjects, tiling patterns and annotation appearances, which carry their own Resources.
  */
 function ownUsedResources(page) {
-  const { PDFName, PDFDict, PDFArray, PDFRawStream, decodePDFRawStream } = PDFLib;
+  const { PDFName, PDFDict, PDFArray, PDFRawStream, PDFRef, decodePDFRawStream } = PDFLib;
   const ctx = page.node.context;
+  const N = PDFName.of;
   const norm = (n) => n.replace(/#([0-9a-f]{2})/gi, (_, x) => String.fromCharCode(parseInt(x, 16)));
-  const contents = ctx.lookup(page.node.get(PDFName.of('Contents')));
-  const streams = contents instanceof PDFArray ? contents.asArray().map((r) => ctx.lookup(r)) : contents ? [contents] : [];
-  let ops = '';
-  for (const st of streams) ops += new TextDecoder('latin1').decode(st instanceof PDFRawStream ? decodePDFRawStream(st).decode() : st.getContents()) + '\n';
-  const used = new Set((ops.match(/\/[^\s/[\]()<>{}%]+/g) || []).map(norm));
-  const res = page.node.Resources();
-  if (!res) return;
-  const mine = res.clone(ctx);
-  for (const cat of ['XObject', 'Font', 'ExtGState', 'Shading', 'Pattern', 'ColorSpace', 'Properties']) {
-    const d = mine.lookupMaybe(PDFName.of(cat), PDFDict);
-    if (!d) continue;
-    const kept = d.clone(ctx);
-    for (const key of kept.keys()) if (!used.has(norm(key.asString()))) kept.delete(key);
-    mine.set(PDFName.of(cat), kept);
+  const ops = (streams) => streams.map((st) => new TextDecoder('latin1').decode(st instanceof PDFRawStream ? decodePDFRawStream(st).decode() : st.getContents())).join('\n');
+  const names = (text) => new Set((text.match(/\/[^\s/[\]()<>{}%]+/g) || []).map(norm));
+
+  // Trim `res` to names used by `text`; returns a private copy. Streams it keeps are themselves cloned and trimmed.
+  function trim(res, text, depth) {
+    const used = names(text);
+    const mine = res.clone(ctx);
+    for (const cat of ['XObject', 'Font', 'ExtGState', 'Shading', 'Pattern', 'ColorSpace', 'Properties']) {
+      const d = mine.lookupMaybe(N(cat), PDFDict);
+      if (!d) continue;
+      const kept = d.clone(ctx);
+      for (const key of kept.keys()) {
+        if (!used.has(norm(key.asString()))) { kept.delete(key); continue; }
+        if (cat === 'XObject' || cat === 'Pattern') kept.set(key, ownStream(kept.get(key), depth));
+      }
+      mine.set(N(cat), kept);
+    }
+    return mine;
   }
-  page.node.set(PDFName.of('Resources'), mine);
+
+  // A stream with its own Resources (Form XObject, tiling pattern, appearance): clone it, trim its Resources.
+  function ownStream(refOrObj, depth) {
+    const st = ctx.lookup(refOrObj);
+    if (!(st instanceof PDFRawStream)) return refOrObj;
+    const res = st.dict.lookupMaybe(N('Resources'), PDFDict);
+    if (!res) return refOrObj;
+    if (depth > 12) throw new UserError('This PDF nests its drawings too deeply to redact safely.');
+    const copy = st.clone(ctx);
+    copy.dict.set(N('Resources'), trim(res, ops([st]), depth + 1));
+    return ctx.register(copy);
+  }
+
+  const contents = ctx.lookup(page.node.get(N('Contents')));
+  const streams = contents instanceof PDFArray ? contents.asArray().map((r) => ctx.lookup(r)) : contents ? [contents] : [];
+  const res = page.node.Resources();
+  if (res) page.node.set(N('Resources'), trim(res, ops(streams), 0));
+
+  // Annotation appearance streams (/AP /N /R /D, each a stream or a dict of state -> stream)
+  const annots = page.node.lookupMaybe(N('Annots'), PDFArray);
+  for (const a of annots ? annots.asArray() : []) {
+    const annot = ctx.lookup(a);
+    const ap = annot instanceof PDFDict && annot.lookupMaybe(N('AP'), PDFDict);
+    if (!ap) continue;
+    const myAp = ap.clone(ctx);
+    for (const k of myAp.keys()) {
+      const v = ctx.lookup(myAp.get(k));
+      if (v instanceof PDFDict && !(v instanceof PDFRawStream)) {
+        const states = v.clone(ctx);
+        for (const sk of states.keys()) states.set(sk, ownStream(states.get(sk), 0));
+        myAp.set(k, states);
+      } else myAp.set(k, ownStream(myAp.get(k), 0));
+    }
+    const myAnnot = annot.clone(ctx);
+    myAnnot.set(N('AP'), myAp);
+    annots.set(annots.asArray().indexOf(a), a instanceof PDFRef ? ctx.register(myAnnot) : myAnnot);
+  }
 }
 
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
