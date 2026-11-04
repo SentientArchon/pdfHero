@@ -1,0 +1,35 @@
+feature,area,priority,original,clone,notes
+Merge PDF,organize,must,yes,yes,
+Split PDF,organize,must,yes,yes,
+Remove pages,organize,must,yes,yes,
+Extract pages,organize,must,yes,yes,
+Organize PDF,organize,must,yes,yes,
+Scan to PDF,organize,should,yes,yes,camera capture not covered by automated tests (headless has no camera); photo upload path is tested
+Compress PDF,optimize,must,yes,yes,
+Repair PDF,optimize,should,yes,yes,
+OCR PDF,optimize,must,yes,yes,
+JPG to PDF,convert-to,must,yes,yes,
+Word to PDF,convert-to,must,yes,yes,
+PowerPoint to PDF,convert-to,must,yes,yes,
+Excel to PDF,convert-to,must,yes,yes,
+HTML to PDF,convert-to,should,yes,yes,
+PDF to JPG,convert-from,must,yes,partial,"renders pages; no separate ""extract embedded images"" mode"
+PDF to Word,convert-from,must,yes,yes,
+PDF to PowerPoint,convert-from,should,yes,partial,each page becomes a slide image; text is not editable in PowerPoint
+PDF to Excel,convert-from,should,yes,partial,ruled tables come out well; borderless tables fall back to splitting lines on wide gaps
+PDF to PDF/A,convert-from,should,yes,yes,
+Rotate PDF,edit,must,yes,yes,
+Add page numbers,edit,must,yes,yes,
+Add watermark,edit,must,yes,yes,
+Crop PDF,edit,should,yes,yes,
+Edit PDF,edit,must,yes,partial,adds text/images/shapes/drawing/white-out; cannot change text already in the PDF; standard fonts are Latin-only
+PDF Forms,edit,should,yes,partial,fills and flattens existing fields; cannot create new fields
+Unlock PDF,security,must,yes,yes,
+Protect PDF,security,must,yes,yes,
+Sign PDF,security,must,yes,yes,
+Redact PDF,security,should,yes,yes,
+Compare PDF,security,could,yes,yes,
+PDF to Markdown,intelligence,could,yes,yes,
+AI Summarizer,intelligence,could,yes,skip,needs a cloud AI model; files would leave the machine
+Translate PDF,intelligence,could,yes,skip,needs a cloud AI model; files would leave the machine
+Accounts and cloud storage pickers,platform,could,yes,skip,personal local tool; nothing to sync

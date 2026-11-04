@@ -1,0 +1,1 @@
+{ "version": "0.0.1", "configurations": [ { "name": "pdfhero", "runtimeExecutable": "node", "runtimeArgs": ["server.js"], "port": 4321, "url": "http://127.0.0.1:4321" } ] }

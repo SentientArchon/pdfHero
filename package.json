@@ -1,0 +1,23 @@
+{
+  "name": "pdfhero",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/e2e.test.mjs",
+    "setup": "brew install qpdf ghostscript ocrmypdf tesseract-lang && brew install --cask libreoffice; python3 -m venv .venv && .venv/bin/pip install pdf2docx pdfplumber openpyxl python-pptx"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "jszip": "^3.10.2",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299"
+  },
+  "private": true,
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}
