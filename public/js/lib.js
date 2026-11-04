@@ -1,8 +1,10 @@
 // Shared helpers: PDF loading/rendering, page ranges, downloads, server calls, small DOM utils.
-import * as pdfjs from '/vendor/pdfjs/build/pdf.min.mjs';
-import * as PDFLib from '/vendor/pdf-lib.js';
+import * as pdfjs from '../vendor/pdfjs/build/pdf.min.mjs';
+import * as PDFLib from '../vendor/pdf-lib.js';
 
-pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.min.mjs';
+// Relative to this file, so the site works under any path (e.g. user.github.io/pdfHero/).
+export const VENDOR = new URL('../vendor/', import.meta.url).href;
+pdfjs.GlobalWorkerOptions.workerSrc = `${VENDOR}pdfjs/build/pdf.worker.min.mjs`;
 export { pdfjs, PDFLib };
 export const { PDFDocument, degrees, rgb, StandardFonts } = PDFLib;
 
@@ -43,8 +45,8 @@ export async function loadPdfJs(file) {
     const data = await bytesOf(file);
     try {
       return await pdfjs.getDocument({
-        data, isEvalSupported: false, fontExtraProperties: true /* keeps font names for Edit text */, cMapUrl: '/vendor/pdfjs/cmaps/', cMapPacked: true,
-        standardFontDataUrl: '/vendor/pdfjs/standard_fonts/', wasmUrl: '/vendor/pdfjs/wasm/', iccUrl: '/vendor/pdfjs/iccs/',
+        data, isEvalSupported: false, fontExtraProperties: true /* keeps font names for Edit text */, cMapUrl: `${VENDOR}pdfjs/cmaps/`, cMapPacked: true,
+        standardFontDataUrl: `${VENDOR}pdfjs/standard_fonts/`, wasmUrl: `${VENDOR}pdfjs/wasm/`, iccUrl: `${VENDOR}pdfjs/iccs/`,
       }).promise;
     } catch (e) {
       if (e.name === 'PasswordException') throw new UserError(`"${file.name}" is password-protected. Use Unlock PDF first.`);
@@ -150,16 +152,16 @@ export async function zip(results, name) {
   return { name, blob: await z.generateAsync({ type: 'blob' }) };
 }
 
-// ---------- local server ----------
-let healthPromise;
-export function health() {
-  healthPromise ||= fetch('/api/health').then((r) => r.json()).catch(() => ({ tools: {}, ops: {}, langs: ['eng'] }));
-  return healthPromise;
-}
-
-export async function api(op, file, query = {}, headers = {}) {
-  const qs = new URLSearchParams({ name: file?.name || '', ...query });
-  const res = await fetch(`/api/${op}?${qs}`, { method: 'POST', body: file || '', headers });
-  if (!res.ok) throw new UserError(await res.text());
-  return res.blob();
+// ---------- WebAssembly engines (Ghostscript, qpdf) ----------
+/**
+ * Run a command-line engine in its own Web Worker. `files` are written to its virtual disk,
+ * `outputs` read back after. A fresh worker per job keeps memory from piling up.
+ */
+export function runWasm(engine, args, files, outputs) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./engines/wasm-worker.js', import.meta.url));
+    w.onmessage = ({ data }) => { w.terminate(); data.error ? reject(new Error(data.error)) : resolve(data); };
+    w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Engine failed to start.')); };
+    w.postMessage({ engine, base: VENDOR, args, files, outputs }); // copied, not transferred: callers may reuse their bytes
+  });
 }

@@ -375,11 +375,9 @@ export async function resolveFont(it) {
     const k = await kit(`pdf:${src.loadedName}`, () => src.data);
     if (k && covers(k, src.sample) && covers(k, it.text)) return { key: `pdf:${src.loadedName}`, bytes: k.bytes, label: `Font: ${bare} (from this PDF)` };
   }
-  const k = await kit(`sys:${bare}`, async () => {
-    const res = await fetch(`/api/font?name=${encodeURIComponent(bare)}`);
-    return res.status === 200 ? new Uint8Array(await res.arrayBuffer()) : null;
-  });
-  if (k && covers(k, it.text)) return { key: `sys:${bare}`, bytes: k.bytes, label: `Font: ${bare} (installed on this Mac${src.data ? '; the PDF’s copy lacks some letters' : ''})` };
+  const k = await kit(`sys:${bare}`, () => installedFont(bare));
+  if (k && covers(k, it.text)) return { key: `sys:${bare}`, bytes: k.bytes, label: `Font: ${bare} (installed on this device${src.data ? '; the PDF’s copy lacks some letters' : ''})` };
+  if (!k && !window.queryLocalFonts) return { label: `Font: ${fontLabel(it.font)} (standard stand-in; this browser can’t read installed fonts)` };
   if (!k && /^(helvetica|times|courier)/i.test(bare)) return { label: `Font: ${fontLabel(it.font)} (a standard PDF font, same as the original)` };
   return { label: `Font: ${fontLabel(it.font)} (standard stand-in: ${bare} ${k ? 'lacks some letters' : 'isn’t installed'})` };
 }
@@ -393,4 +391,18 @@ function faceFor(r) {
     faces.set(r.key, new FontFace(name, r.bytes).load().then((f) => { document.fonts.add(f); return name; }).catch(() => null));
   }
   return faces.get(r.key);
+}
+
+// "ABCDEF+Arial,Bold" / "Arial-BoldMT" / "Arial Bold" -> "arialbold"
+const normFont = (n) => String(n).toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(mt|ps)$/, '');
+let localFonts;
+/** The same font from this device, via the Local Font Access API (Chrome/Edge; asks permission once). */
+async function installedFont(name) {
+  if (!window.queryLocalFonts) return null;
+  try {
+    localFonts ||= await window.queryLocalFonts();
+    const want = normFont(name);
+    const f = localFonts.find((x) => normFont(x.postscriptName) === want) || localFonts.find((x) => normFont(x.fullName) === want);
+    return f ? new Uint8Array(await (await f.blob()).arrayBuffer()) : null;
+  } catch { localFonts = null; return null; } // permission refused or API unavailable
 }

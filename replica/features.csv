@@ -7,16 +7,16 @@ Organize PDF,organize,must,yes,yes,
 Scan to PDF,organize,should,yes,yes,camera capture not covered by automated tests (headless has no camera); photo upload path is tested
 Compress PDF,optimize,must,yes,yes,
 Repair PDF,optimize,should,yes,yes,
-OCR PDF,optimize,must,yes,yes,
+OCR PDF,optimize,must,yes,yes,in-browser Tesseract; 6 languages bundled
 JPG to PDF,convert-to,must,yes,yes,
-Word to PDF,convert-to,must,yes,yes,
-PowerPoint to PDF,convert-to,must,yes,yes,
-Excel to PDF,convert-to,must,yes,yes,
-HTML to PDF,convert-to,should,yes,yes,
+Word to PDF,convert-to,must,yes,partial,"in-browser: .docx only; text, headings, lists, tables, pictures; complex layout simplified; saved via the browser print dialog"
+PowerPoint to PDF,convert-to,must,yes,partial,in-browser: .pptx only; text boxes and pictures at their positions; themes/effects simplified
+Excel to PDF,convert-to,must,yes,partial,in-browser: .xlsx/.csv; values as tables; formatting and charts not kept
+HTML to PDF,convert-to,should,yes,partial,in-browser: HTML files only (no web addresses); scripts and outside resources blocked
 PDF to JPG,convert-from,must,yes,partial,"renders pages; no separate ""extract embedded images"" mode"
-PDF to Word,convert-from,must,yes,yes,
+PDF to Word,convert-from,must,yes,partial,in-browser: paragraphs and headings; images and tables not kept
 PDF to PowerPoint,convert-from,should,yes,partial,each page becomes a slide image; text is not editable in PowerPoint
-PDF to Excel,convert-from,should,yes,partial,ruled tables come out well; borderless tables fall back to splitting lines on wide gaps
+PDF to Excel,convert-from,should,yes,partial,in-browser: text grouped into rows/columns; best on clear tables
 PDF to PDF/A,convert-from,should,yes,yes,
 Rotate PDF,edit,must,yes,yes,
 Add page numbers,edit,must,yes,yes,
@@ -27,7 +27,7 @@ PDF Forms,edit,should,yes,partial,fills and flattens existing fields; cannot cre
 Unlock PDF,security,must,yes,yes,
 Protect PDF,security,must,yes,yes,
 Sign PDF,security,must,yes,yes,
-Redact PDF,security,should,yes,yes,
+Redact PDF,security,should,yes,yes,pages flattened and whole file rebuilt with Ghostscript; links not clickable in output
 Compare PDF,security,could,yes,yes,
 PDF to Markdown,intelligence,could,yes,yes,
 AI Summarizer,intelligence,could,yes,skip,needs a cloud AI model; files would leave the machine

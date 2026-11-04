@@ -1,28 +1,28 @@
-import { PDFLib, h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError, PDFDocument } from '../lib.js';
-import { serverTool, pageLines } from './convert.js';
+import { PDFLib, h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError, PDFDocument, bytesOf } from '../lib.js';
+import { perFile, pageLines } from './convert.js';
+import { qpdf, gs } from '../engines/pdf-engines.js';
 import { pageEditor, applyItems } from '../editor.js';
 
-const enc = encodeURIComponent;
 
 export default [
-  serverTool({
-    id: 'protect', cat: 'security', icon: '🔒', name: 'Protect PDF', action: 'Encrypt', op: 'protect', outSuffix: '_protected',
+  perFile({
+    id: 'protect', cat: 'security', icon: '🔒', name: 'Protect PDF', action: 'Encrypt', outSuffix: '_protected',
     desc: 'Lock a PDF with a password (AES-256). Nobody can open it without the password.',
     options: () => [
       { key: 'pw', label: 'Password', type: 'password' },
       { key: 'pw2', label: 'Repeat password', type: 'password' },
     ],
-    headers(o) {
+    async convert(f, o) {
       if (!o.pw) throw new UserError('Type a password.');
       if (o.pw !== o.pw2) throw new UserError('The two passwords don’t match.');
-      return { 'X-Password': enc(o.pw) };
+      return qpdf(await bytesOf(f), ['--encrypt', o.pw, o.pw, '256', '--', '$in', '$out']);
     },
   }),
-  serverTool({
-    id: 'unlock', cat: 'security', icon: '🔓', name: 'Unlock PDF', action: 'Unlock', op: 'unlock', outSuffix: '_unlocked',
+  perFile({
+    id: 'unlock', cat: 'security', icon: '🔓', name: 'Unlock PDF', action: 'Unlock', outSuffix: '_unlocked',
     desc: 'Remove the password and restrictions from a PDF you have the right to open.',
     options: () => [{ key: 'pw', label: 'Password (if it needs one to open)', type: 'password', help: 'Files that only restrict printing or copying unlock without one.' }],
-    headers: (o) => (o.pw ? { 'X-Password': enc(o.pw) } : {}),
+    convert: async (f, o) => qpdf(await bytesOf(f), [...(o.pw ? [`--password=${o.pw}`] : []), '--decrypt', '$in', '$out']),
   }),
   {
     id: 'sign', cat: 'security', icon: '✍', name: 'Sign PDF', action: 'Save signed PDF',
@@ -47,7 +47,7 @@ export default [
   },
   {
     id: 'redact', cat: 'security', icon: '▬', name: 'Redact PDF', action: 'Redact permanently',
-    desc: 'Black out text and areas for good: redacted pages are flattened, so the hidden content is really gone.',
+    desc: 'Black out text and areas for good: redacted pages are flattened and the whole file is rebuilt, so hidden content is really gone. Links in the output are not clickable.',
     options: () => [
       { key: 'dpi', label: 'Quality of redacted pages', type: 'seg', choices: [['150', 'Normal'], ['220', 'High']], default: '150' },
       { key: 'meta', label: 'Also remove document properties (title, author…)', type: 'checkbox', default: true },
@@ -91,7 +91,12 @@ export default [
       // (streams the cleaned untouched pages still use were visible on those pages anyway)
       const shown = streamPrints(src, [...Array(src.getPageCount()).keys()].map((i) => i + 1).filter((n) => !hit.has(n)));
       dropUnreachable(doc, new Set([...redactedStreams].filter((x) => !shown.has(x))));
-      return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: await pdfBlob(doc) }];
+      // Last step, and the one that closes the whole class of leaks: Ghostscript re-draws every page into a
+      // brand-new file, which keeps only what is actually drawn. Annotations are drawn into the page (links
+      // stop being clickable). If this fails, nothing is saved.
+      ctx.progress('Rewriting the file from scratch…');
+      const final = await gs(await doc.save(), ['-dPreserveAnnots=false', '-dShowAnnots=true', '-dAutoRotatePages=/None', '-dPassThroughJPEGImages=true']);
+      return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: new Blob([final], { type: 'application/pdf' }) }];
     },
   },
   {

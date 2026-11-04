@@ -4,21 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; font-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>pdfHero</title>
-  <link rel="icon" href="/favicon.svg">
-  <link rel="stylesheet" href="/tokens.css">
-  <link rel="stylesheet" href="/app.css">
+  <link rel="icon" href="favicon.svg">
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
   <a class="skip" href="#app">Skip to content</a>
   <header class="top">
-    <a class="logo" href="#/"><img src="/favicon.svg" alt="" width="28" height="28"> pdfHero</a>
-    <span class="private-pill" title="Files are processed on this computer only. The page is not allowed to contact any other server.">● Offline &amp; private</span>
+    <a class="logo" href="#/"><img src="favicon.svg" alt="" width="28" height="28"> pdfHero</a>
+    <span class="private-pill" title="Files are processed in this browser tab only. The page is not allowed to send them anywhere.">● Offline &amp; private</span>
   </header>
   <main id="app" tabindex="-1"></main>
-  <footer class="foot">Runs entirely on this computer. No uploads, no tracking, no accounts.</footer>
-  <script src="/vendor/jszip.js"></script>
-  <script src="/vendor/fontkit.js"></script>
-  <script type="module" src="/js/app.js"></script>
+  <footer class="foot">Everything runs inside your browser. No uploads, no tracking, no accounts.</footer>
+  <script src="vendor/jszip.js"></script>
+  <script src="vendor/fontkit.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

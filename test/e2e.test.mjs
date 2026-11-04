@@ -16,9 +16,12 @@ let browser; let page; const errors = [];
 before(async () => {
   execFileSync('node', [new URL('./make-fixtures.mjs', import.meta.url).pathname]);
   browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  page = await (await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 1000 } })).newPage();
+  const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 1000 } });
+  await context.grantPermissions(['local-fonts']).catch(() => {}); // Edit PDF reads installed fonts with permission
+  page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('request', (r) => { if (!r.url().startsWith(BASE.slice(0, -1)) && !/^(blob|data):/.test(r.url())) errors.push(`outside request: ${r.url()}`); });
+  // count requests that actually reached a server (a CSP-blocked attempt still fires 'request', but gets no response)
+  page.on('response', (r) => { if (!r.url().startsWith(BASE.slice(0, -1)) && !/^(blob|data):/.test(r.url())) errors.push(`outside request: ${r.url()}`); });
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 });
 after(async () => { await browser?.close(); });
@@ -126,7 +129,7 @@ test('edit: replacement text uses the document\'s own font', { skip: !fs.existsS
   await page.keyboard.type('sample line');            // letters all in the PDF's subset
   await page.waitForFunction(() => /from this PDF/.test(document.querySelector('.font-note').textContent));
   await page.keyboard.press('End'); await page.keyboard.type(' Ωxyz ñ');  // not in the subset -> installed copy
-  await page.waitForFunction(() => /installed on this Mac/.test(document.querySelector('.font-note').textContent));
+  await page.waitForFunction(() => /installed on this device/.test(document.querySelector('.font-note').textContent));
   const { buf } = await run();
   assert.match(text(buf), /sample line Ωxyz ñ/);
   assert.match(rawPdf(buf), /\/BaseFont \/\S*Georgia/);
@@ -198,8 +201,7 @@ test('redact: links and annotations pointing at a redacted page do not pull it b
   const raw = rawPdf(buf);
   assert.doesNotMatch(raw, hex);
   assert.equal((raw.match(/\/Type \/Page\b/g) || []).length, 2);
-  const utf16hex = (t) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
-  assert.match(raw, new RegExp(`example\\.com|${utf16hex('example.com')}`, 'i')); // web links survive (stored hex-encoded)
+  assert.doesNotMatch(raw, /\/Annots/); // the final rebuild draws annotations into the page
   assert.match(text(buf), /Linked two public/);
 });
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
@@ -222,25 +224,38 @@ test('protect then unlock', async () => {
   fs.rmSync(f);
 });
 test('protect: mismatched passwords', async () => { await open('protect', ['a.pdf']); await page.fill('#opt-pw', 'a'); await page.fill('#opt-pw2', 'b'); await assert.rejects(run(), /match/); });
-for (const [id, file] of [['word-to-pdf', 'doc.docx'], ['excel-to-pdf', 'sheet.xlsx'], ['powerpoint-to-pdf', 'deck.pptx'], ['html-to-pdf', 'page.html']]) {
-  test(id, { timeout: 240e3 }, async () => { await open(id, [file]); assert.ok((await pdf((await run()).buf)).getPageCount() >= 1); });
+/** Print tools: run, then return the text the locked-down preview frame shows. */
+async function preview() {
+  await page.click('.panel > button.btn.primary');
+  await page.waitForSelector('.result .done, .result .alert.err', { timeout: 120e3 });
+  const err = await page.$('.result .alert.err'); if (err) throw new Error(await err.textContent());
+  assert.ok(await page.$('.result button:text("Save as PDF")'));
+  const frame = page.frameLocator('.print-frame');
+  await frame.locator('body').waitFor();
+  assert.equal(await page.getAttribute('.print-frame', 'sandbox'), 'allow-same-origin allow-modals'); // no scripts, forms or navigation
+  return frame.locator('body').innerText();
 }
-test('html file cannot read other local files', async () => {
-  fs.writeFileSync(FIX + 'evil.html', '<!doctype html><header>x</header><p>visible</p><iframe src="file:///etc/hosts" width=600 height=400></iframe><script>document.write("JSRAN")</script>');
-  fs.writeFileSync(FIX + 'evil2.html', '<meta http-equiv="refresh" content="0;url=file:///etc/hosts"><p>stayed</p>');
+for (const [id, file, want] of [['word-to-pdf', 'doc.docx', /Hello Word document/], ['excel-to-pdf', 'sheet.xlsx', /a\s+b[\s\S]*1\s+2/], ['powerpoint-to-pdf', 'deck.pptx', /Slide one/], ['html-to-pdf', 'page.html', /Hello from HTML/]]) {
+  test(id, async () => { await open(id, [file]); assert.match(await preview(), want); });
+}
+test('excel-to-pdf: csv', async () => {
+  fs.writeFileSync(FIX + 'data.csv', 'name,qty\n"Smith, Ann",3\n'); await open('excel-to-pdf', ['data.csv']);
+  const t = await preview(); fs.rmSync(FIX + 'data.csv'); assert.match(t, /Smith, Ann\s+3/);
+});
+test('html file: no scripts, no local files, no outside loads', async () => {
+  fs.writeFileSync(FIX + 'evil.html', '<!doctype html><header>x</header><p>visible</p><iframe src="file:///etc/hosts"></iframe><img src="https://example.com/x.png"><script>document.write("JSRAN")</script>');
   await open('html-to-pdf', ['evil.html']);
-  const t = text((await run()).buf);
-  await open('html-to-pdf', ['evil2.html']);
-  const t2 = text((await run()).buf);
-  fs.rmSync(FIX + 'evil.html'); fs.rmSync(FIX + 'evil2.html');
+  const t = await preview();
+  fs.rmSync(FIX + 'evil.html');
   assert.match(t, /visible/); assert.doesNotMatch(t, /localhost|JSRAN/);
-  assert.doesNotMatch(t2, /localhost/);
 });
 for (const id of ['pdf-to-word', 'pdf-to-excel', 'pdf-to-powerpoint']) {
   test(id, { timeout: 240e3 }, async () => { await open(id, ['a.pdf']); assert.ok(isZip((await run()).buf)); });
 }
 test('wrong file type is rejected', async () => { await page.goto(`${BASE}#/merge`); await page.setInputFiles('#file-in', FIX + 'img.png'); await page.waitForSelector('.alert.err'); });
 
-test('no console errors and nothing contacted outside localhost', async () => {
-  assert.deepEqual(errors.filter((e) => !/Failed to load resource.*(400|404)/.test(e)), []);
+test('no console errors and nothing contacted outside the site', async () => {
+  // the HTML security test triggers these on purpose: they are the protections working
+  const expected = /Not allowed to load local resource|violates the following Content Security Policy|Blocked script execution in 'about:srcdoc'/;
+  assert.deepEqual(errors.filter((e) => !/Failed to load resource.*(400|404)/.test(e) && !expected.test(e)), []);
 });

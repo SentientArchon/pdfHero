@@ -1,17 +1,34 @@
-import { h, api, PDFDocument, pdfBlob, embedImage, baseName, UserError, loadPdfJs, renderPage, canvasBlob, sizeLabel, parseRanges } from '../lib.js';
+import { h, PDFDocument, pdfBlob, embedImage, baseName, UserError, loadPdfJs, renderPage, canvasBlob, sizeLabel, parseRanges, bytesOf } from '../lib.js';
+import { gs, qpdf, COMPRESS, pdfa, ocrPdf, OCR_LANGS, pdfToDocx, pdfToXlsx, pdfToPptx } from '../engines/pdf-engines.js';
+import { printFrame, docxHtml, sheetHtml, pptxHtml, htmlFile } from '../engines/office.js';
 
-/** A tool whose work is done by the local helper (POST /api/<op>), one file at a time. */
-export function serverTool({ op, outSuffix = '', query = () => ({}), headers = () => ({}), ...def }) {
+const MIME = { pdf: 'application/pdf' };
+/** A tool that handles each chosen file on its own with `convert(file, opts, ctx) -> Blob | bytes`. */
+export function perFile({ convert, outSuffix = '', ext = 'pdf', ...def }) {
   return {
-    server: op, multiple: true, ...def,
+    multiple: true, ...def,
     async run(files, o, ctx) {
       const results = [];
       for (const [i, f] of files.entries()) {
         ctx.progress(`Working on ${f.name} (${i + 1} of ${files.length})…`);
-        const blob = await api(op, f, query(o, ctx), headers(o, ctx));
-        results.push({ name: `${baseName(f.name)}${outSuffix}.${def.ext || 'pdf'}`, blob, before: f.size });
+        const out = await convert(f, o, ctx);
+        const blob = out instanceof Blob ? out : new Blob([out], { type: MIME[ext] || 'application/octet-stream' });
+        results.push({ name: `${baseName(f.name)}${outSuffix}.${ext}`, blob, before: f.size });
       }
       return results;
+    },
+  };
+}
+
+/** Office/HTML -> preview frame + "Save as PDF" through the browser's print dialog. */
+function printTool({ make, ...def }) {
+  return {
+    ...def,
+    async run([f], o, ctx) {
+      ctx.progress('Laying out the document…');
+      const html = await make(f, o);
+      const frame = printFrame(html, `Preview of ${f.name}`);
+      return [{ name: `${baseName(f.name)}.pdf`, print: frame, view: h('div', { class: 'print-wrap' }, frame) }];
     },
   };
 }
@@ -20,32 +37,35 @@ const PAGE = { a4: [595.28, 841.89], letter: [612, 792] };
 
 export default [
   // ---------- optimize ----------
-  serverTool({
-    id: 'compress', cat: 'optimize', icon: '⇲', name: 'Compress PDF', action: 'Compress', op: 'compress', outSuffix: '_compressed',
+  perFile({
+    id: 'compress', cat: 'optimize', icon: '⇲', name: 'Compress PDF', action: 'Compress', outSuffix: '_compressed',
+    convert: async (f, o) => gs(await bytesOf(f), ['-dCompatibilityLevel=1.5', `-dPDFSETTINGS=${COMPRESS[o.level] || '/ebook'}`, '-dDetectDuplicateImages=true']),
     desc: 'Shrink a PDF by re-encoding its images, with a choice of how hard to squeeze.',
     options: () => [{ key: 'level', label: 'Compression', type: 'seg', choices: [['low', 'Light'], ['recommended', 'Balanced'], ['extreme', 'Strong']], default: 'recommended',
       help: 'Strong gives the smallest file with visibly softer images.' }],
-    query: (o) => ({ level: o.level }),
     report: (rs) => rs.map((r) => `${sizeLabel(r.before)} → ${sizeLabel(r.blob.size)} (${r.blob.size < r.before ? '−' + Math.round(100 - (r.blob.size / r.before) * 100) : '+' + Math.round((r.blob.size / r.before) * 100 - 100)}%)`).join(' · '),
   }),
-  serverTool({
-    id: 'repair', cat: 'optimize', icon: '⚕', name: 'Repair PDF', action: 'Repair', op: 'repair', outSuffix: '_repaired',
+  perFile({
+    id: 'repair', cat: 'optimize', icon: '⚕', name: 'Repair PDF', action: 'Repair', outSuffix: '_repaired',
     desc: 'Rebuild a damaged PDF’s structure so it opens again, recovering what can be recovered.',
-  }),
-  {
-    ...serverTool({
-      id: 'ocr', cat: 'optimize', icon: '⌕', name: 'OCR PDF', action: 'Recognise text', op: 'ocr', outSuffix: '_ocr',
-      desc: 'Turn scanned pages into searchable, selectable text. Pages that already have text are left alone.',
-      query: (o) => ({ lang: [o.lang, o.lang2].filter(Boolean).join('+') }),
-    }),
-    options: (ctx) => {
-      const langs = (ctx.health?.langs?.length ? ctx.health.langs : ['eng']).map((l) => [l, l]);
-      return [
-        { key: 'lang', label: 'Document language', type: 'select', choices: langs, default: langs.find((l) => l[0] === 'eng')?.[0] || langs[0][0], help: 'Tesseract language codes, e.g. eng, spa, fra, deu.' },
-        { key: 'lang2', label: 'Second language (optional)', type: 'select', choices: [['', 'None'], ...langs], default: '' },
-      ];
+    async convert(f) {
+      const bytes = await bytesOf(f);
+      try { return await qpdf(bytes, ['$in', '$out']); } catch { return gs(bytes, []); } // qpdf first; Ghostscript re-draws what qpdf can't fix
     },
-  },
+  }),
+  perFile({
+    id: 'ocr', cat: 'optimize', icon: '⌕', name: 'OCR PDF', action: 'Recognise text', outSuffix: '_ocr',
+    desc: 'Turn scanned pages into searchable, selectable text. Pages that already have text are left alone.',
+    options: () => [
+      { key: 'lang', label: 'Document language', type: 'select', choices: OCR_LANGS, default: 'eng' },
+      { key: 'lang2', label: 'Second language (optional)', type: 'select', choices: [['', 'None'], ...OCR_LANGS], default: '' },
+    ],
+    async convert(f, o, ctx) {
+      const { bytes, done } = await ocrPdf(f, [...new Set([o.lang, o.lang2].filter(Boolean))], ctx.progress);
+      if (!done) throw new UserError('Every page already has text, so there was nothing to recognise.');
+      return bytes;
+    },
+  }),
 
   // ---------- to PDF ----------
   {
@@ -76,21 +96,14 @@ export default [
       return Promise.all(files.map(async (f) => ({ name: `${baseName(f.name)}.pdf`, blob: await make([f]) })));
     },
   },
-  ...[['word', 'Word', '.doc,.docx,.odt,.rtf,.txt', 'W'], ['powerpoint', 'PowerPoint', '.ppt,.pptx,.odp,.key', 'P'], ['excel', 'Excel', '.xls,.xlsx,.ods,.csv', 'X']].map(([id, label, accept, icon]) => serverTool({
-    id: `${id}-to-pdf`, cat: 'to', icon, name: `${label} to PDF`, action: 'Convert', op: 'office2pdf', accept,
-    desc: `Convert ${label} documents (${accept.replaceAll(',', ' ')}) into PDF, keeping their layout.`,
-  })),
-  {
-    ...serverTool({ id: 'html-to-pdf', cat: 'to', icon: '⟨⟩', name: 'HTML to PDF', action: 'Convert', op: 'html2pdf', accept: '.html,.htm', minFiles: 0, multiple: false,
-      desc: 'Save a web page (by address) or an HTML file as a PDF.' }),
-    options: () => [{ key: 'url', label: 'Web page address', type: 'url', placeholder: 'https://example.com', help: 'Leave empty to convert the HTML file you chose instead. The page is fetched directly by this computer.' }],
-    async run(files, o) {
-      if (!o.url && !files[0]) throw new UserError('Type a web address or choose an HTML file.');
-      if (o.url && !/^https?:\/\//i.test(o.url)) throw new UserError('The address must start with http:// or https://');
-      const blob = await api('html2pdf', o.url ? null : files[0], o.url ? { url: o.url } : {});
-      return [{ name: o.url ? `${new URL(o.url).hostname}.pdf` : `${baseName(files[0].name)}.pdf`, blob }];
-    },
-  },
+  printTool({ id: 'word-to-pdf', cat: 'to', icon: 'W', name: 'Word to PDF', action: 'Convert', accept: '.docx', make: docxHtml,
+    desc: 'Turn a Word document (.docx) into a PDF: text, headings, lists, tables and pictures. Complex layouts are simplified.' }),
+  printTool({ id: 'powerpoint-to-pdf', cat: 'to', icon: 'P', name: 'PowerPoint to PDF', action: 'Convert', accept: '.pptx', make: pptxHtml,
+    desc: 'Turn a presentation (.pptx) into a PDF, one page per slide: text boxes and pictures where they sit. Themes and effects are simplified.' }),
+  printTool({ id: 'excel-to-pdf', cat: 'to', icon: 'X', name: 'Excel to PDF', action: 'Convert', accept: '.xlsx,.csv', make: sheetHtml,
+    desc: 'Turn a spreadsheet (.xlsx or .csv) into a PDF, one table per sheet. Cell formatting and charts are not kept.' }),
+  printTool({ id: 'html-to-pdf', cat: 'to', icon: '⟨⟩', name: 'HTML to PDF', action: 'Convert', accept: '.html,.htm', make: htmlFile,
+    desc: 'Save an HTML file as a PDF. Scripts don’t run and nothing outside the file is loaded.' }),
 
   // ---------- from PDF ----------
   {
@@ -115,16 +128,16 @@ export default [
       return out;
     },
   },
-  serverTool({ id: 'pdf-to-word', cat: 'from', icon: 'W', name: 'PDF to Word', action: 'Convert', op: 'pdf2word', ext: 'docx',
-    desc: 'Turn a PDF into an editable Word document. Scans need OCR first.' }),
-  serverTool({ id: 'pdf-to-powerpoint', cat: 'from', icon: 'P', name: 'PDF to PowerPoint', action: 'Convert', op: 'pdf2ppt', ext: 'pptx',
+  perFile({ id: 'pdf-to-word', cat: 'from', icon: 'W', name: 'PDF to Word', action: 'Convert', ext: 'docx', convert: (f, o, ctx) => pdfToDocx(f, ctx.progress),
+    desc: 'Turn a PDF into an editable Word document: paragraphs and headings. Layout, images and tables are simplified. Scans need OCR first.' }),
+  perFile({ id: 'pdf-to-powerpoint', cat: 'from', icon: 'P', name: 'PDF to PowerPoint', action: 'Convert', ext: 'pptx', convert: (f, o, ctx) => pdfToPptx(f, ctx.progress),
     desc: 'Make a slide deck with one slide per PDF page (pages become slide images).' }),
-  serverTool({ id: 'pdf-to-excel', cat: 'from', icon: 'X', name: 'PDF to Excel', action: 'Convert', op: 'pdf2excel', ext: 'xlsx',
-    desc: 'Pull the tables out of a PDF into a spreadsheet, one sheet per table.' }),
-  serverTool({ id: 'pdf-to-pdfa', cat: 'from', icon: 'A', name: 'PDF to PDF/A', action: 'Convert', op: 'pdfa', outSuffix: '_pdfa',
+  perFile({ id: 'pdf-to-excel', cat: 'from', icon: 'X', name: 'PDF to Excel', action: 'Convert', ext: 'xlsx', convert: (f, o, ctx) => pdfToXlsx(f, ctx.progress),
+    desc: 'Put the text of each page into a spreadsheet, lined up in rows and columns. Works best on clear tables.' }),
+  perFile({ id: 'pdf-to-pdfa', cat: 'from', icon: 'A', name: 'PDF to PDF/A', action: 'Convert', outSuffix: '_pdfa',
     desc: 'Convert to PDF/A, the archive format meant to open the same way decades from now.',
-    options: () => [{ key: 'level', label: 'Conformance', type: 'seg', choices: [['1b', 'PDF/A-1b'], ['2b', 'PDF/A-2b'], ['3b', 'PDF/A-3b']], default: '2b' }],
-    query: (o) => ({ level: o.level }) }),
+    options: () => [{ key: 'level', label: 'Conformance', type: 'seg', choices: [['1', 'PDF/A-1b'], ['2', 'PDF/A-2b'], ['3', 'PDF/A-3b']], default: '2' }],
+    convert: async (f, o) => pdfa(await bytesOf(f), o.level) }),
 
   // ---------- text ----------
   {

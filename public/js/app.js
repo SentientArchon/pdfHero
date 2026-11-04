@@ -1,5 +1,5 @@
 // App shell: home grid, hash router, and the generic tool page (S02).
-import { h, sizeLabel, download, zip, health, UserError, thumbnail } from './lib.js';
+import { h, sizeLabel, download, zip, UserError, thumbnail } from './lib.js';
 import organize from './tools/organize.js';
 import edit from './tools/edit.js';
 import convert from './tools/convert.js';
@@ -11,15 +11,6 @@ export const CATEGORIES = [
 ];
 export const TOOLS = [...organize, ...edit, ...convert, ...security];
 const byId = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
-
-const INSTALL = {
-  gs: 'brew install ghostscript', qpdf: 'brew install qpdf', ocrmypdf: 'brew install ocrmypdf tesseract-lang',
-  soffice: 'brew install --cask libreoffice', chrome: 'install Google Chrome',
-  'python:pdf2docx': 'npm run setup', 'python:pdfplumber': 'npm run setup',
-  'python:openpyxl': 'npm run setup', 'python:pptx': 'npm run setup',
-};
-const NEEDS = { compress: ['gs'], repair: ['qpdf'], ocr: ['ocrmypdf'], pdfa: ['ocrmypdf'], protect: ['qpdf'], unlock: ['qpdf'],
-  office2pdf: ['soffice'], pdf2word: ['python:pdf2docx'], pdf2excel: ['python:pdfplumber', 'python:openpyxl'], pdf2ppt: ['gs', 'python:pptx'], html2pdf: ['chrome'] };
 
 const app = document.getElementById('app');
 addEventListener('hashchange', route);
@@ -54,12 +45,12 @@ function home() {
     h('span', { class: `card-icon cat-${t.cat}`, 'aria-hidden': 'true' }, t.icon),
     h('span', { class: 'card-title' }, t.name),
     h('span', { class: 'card-desc' }, t.desc),
-    t.server ? h('span', { class: 'badge', title: 'Runs on this computer through the local helper' }, 'local helper') : null);
+  );
 
   app.replaceChildren(
     h('section', { class: 'hero' },
-      h('h1', { tabindex: -1 }, 'Every PDF tool, on your own machine'),
-      h('p', { class: 'lead' }, 'Nothing is uploaded anywhere. Files stay in this browser tab or go to the helper running on this computer, and are gone when you close it.')),
+      h('h1', { tabindex: -1 }, 'Every PDF tool, right in your browser'),
+      h('p', { class: 'lead' }, 'Nothing is uploaded anywhere. Every tool runs inside this browser tab, and your files are gone when you close it.')),
     h('div', { class: 'toolbar' }, tabs, search),
     grid,
   );
@@ -81,17 +72,6 @@ async function toolPage(tool) {
       h('div', {}, h('h1', { tabindex: -1 }, tool.name), h('p', { class: 'lead' }, tool.desc))),
     banner, drop, work,
   );
-
-  if (tool.server) {
-    const hl = await health();
-    if (!hl.ops?.[tool.server]) {
-      const missing = (NEEDS[tool.server] || []).filter((n) => !hl.tools?.[n]);
-      banner.replaceChildren(h('div', { class: 'alert warn' },
-        h('strong', {}, 'This tool needs a converter that is not installed. '),
-        missing.length ? h('span', {}, 'Run: ', ...missing.map((m) => h('code', {}, INSTALL[m] || m)), ' then restart pdfHero.') : 'Is the pdfHero server running?'));
-    }
-    ctx.health = hl;
-  }
 
   if (tool.minFiles === 0) paintWork();
 
@@ -204,10 +184,15 @@ function renderOptions(schema, opts) {
 
 function resultBox(results, tool) {
   if (!results?.length) return h('div', { class: 'alert warn' }, 'Nothing was produced.');
-  const total = results.reduce((n, r) => n + r.blob.size, 0);
   const box = h('div', { class: 'done' }, h('p', { class: 'done-title' }, '✓ Done'));
   if (tool.report) box.append(h('p', { class: 'muted' }, tool.report(results)));
   if (results[0].view) box.append(results[0].view);
+  if (results[0].print) {
+    box.append(h('button', { class: 'btn primary', type: 'button', onclick: () => results[0].print.contentWindow.print() }, 'Save as PDF…'),
+      h('small', { class: 'muted' }, 'In the print window, choose “Save as PDF” as the destination.'));
+    return box;
+  }
+  const total = results.reduce((n, r) => n + r.blob.size, 0);
   if (results.length === 1) {
     box.append(h('button', { class: 'btn primary', type: 'button', onclick: () => download(results[0].blob, results[0].name) }, `Download ${results[0].name}`), h('small', { class: 'muted' }, sizeLabel(results[0].blob.size)));
   } else {

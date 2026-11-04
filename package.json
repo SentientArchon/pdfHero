@@ -3,19 +3,25 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "start": "node server.js",
-    "test": "node --test test/e2e.test.mjs",
-    "setup": "brew install qpdf ghostscript ocrmypdf tesseract-lang && brew install --cask libreoffice; python3 -m venv .venv && .venv/bin/pip install pdf2docx pdfplumber openpyxl python-pptx"
+    "build": "node scripts/vendor.mjs",
+    "start": "node scripts/vendor.mjs && node server.js",
+    "test": "node --test test/e2e.test.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@jspawn/ghostscript-wasm": "^0.0.2",
+    "@neslinesli93/qpdf-wasm": "^0.3.0",
     "@pdf-lib/fontkit": "^1.1.1",
     "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.4.299"
+    "pdfjs-dist": "^6.4.299",
+    "pptxgenjs": "^4.0.1",
+    "tesseract.js": "^7.0.0",
+    "tesseract.js-core": "^7.0.0"
   },
   "private": true,
   "devDependencies": {
