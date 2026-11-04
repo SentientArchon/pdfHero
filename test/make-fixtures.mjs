@@ -44,6 +44,18 @@ fs.writeFileSync(dir + 'shared.pdf', await shared.save());
   p2.node.Resources().lookup(PDFName.of('XObject')).delete(imgKey);
   fs.writeFileSync(dir + 'nested.pdf', await d.save());
 }
+{
+  const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+  const img = await d.embedPng(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAAhIwEFAxQZqQAAAABJRU5ErkJggg==', 'base64'));
+  const p1 = d.addPage([595, 842]); p1.drawText('Masked one private', { x: 50, y: 760, size: 20, font: f }); p1.drawImage(img, { x: 50, y: 500, width: 100, height: 100 });
+  const p2 = d.addPage([595, 842]); p2.drawText('Masked two public', { x: 50, y: 760, size: 20, font: f });
+  const group = d.context.register(d.context.stream('1 g 0 0 10 10 re f', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 10, 10], Group: { S: 'Transparency', CS: 'DeviceGray' }, Resources: d.context.obj({ XObject: { ImLeak: img.ref } }) }));
+  const gs = d.context.register(d.context.obj({ Type: 'ExtGState', SMask: { Type: 'Mask', S: 'Luminosity', G: group } }));
+  const res = p2.node.Resources();
+  res.set(PDFName.of('ExtGState'), d.context.obj({ GSm: gs }));
+  p2.node.addContentStream(d.context.register(d.context.stream('q /GSm gs 0 0 1 rg 300 300 50 50 re f Q')));
+  fs.writeFileSync(dir + 'smask.pdf', await d.save());
+}
 fs.writeFileSync(dir + 'page.html', '<!doctype html><h1>Hello from HTML</h1><p>Converted locally.</p>');
 // 2x2 red PNG
 fs.writeFileSync(dir + 'img.png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));

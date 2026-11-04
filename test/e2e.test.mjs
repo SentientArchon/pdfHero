@@ -138,6 +138,15 @@ test('redact: image inside a shared Form XObject does not survive', async () => 
   assert.doesNotMatch(rawPdf(buf), /\/Width 3\b/);
   assert.match(text(buf), /Nested two public/);
 });
+test('redact: image in a soft-mask group does not survive', async () => {
+  assert.match(rawPdf(fs.readFileSync(FIX + 'smask.pdf')), /\/Width 3\b/);
+  await open('redact', ['smask.pdf']); await page.waitForSelector('.stage canvas');
+  await page.fill('[aria-label="Text to find and redact"]', 'private'); await page.click('text=Mark all matches');
+  await page.waitForSelector('text=/1 match/');
+  const { buf } = await run();
+  assert.doesNotMatch(rawPdf(buf), /\/Width 3\b/);
+  assert.match(text(buf), /Masked two public/);
+});
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
 test('compare visual', async () => { await open('compare', ['a.pdf', 'b.pdf']); await page.click('.seg-btn:text("Visual overlay")'); assert.ok(isZip((await run()).buf)); });
 test('pdf to markdown', async () => { await open('pdf-to-markdown', ['a.pdf']); assert.match((await run()).buf.toString(), /^# Alpha heading 1/m); });

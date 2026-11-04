@@ -139,7 +139,8 @@ export default [
  * Give a page its own Resources holding only names its content uses, before copying it.
  * Pages often share Resources; without this, an image or font used only on a redacted page
  * would be copied along with an untouched page and survive in the file. Recurses into
- * Form XObjects, tiling patterns and annotation appearances, which carry their own Resources.
+ * Form XObjects, tiling patterns, Type 3 fonts, soft-mask groups and annotation appearances:
+ * every kind of PDF object that can carry its own Resources.
  */
 function ownUsedResources(page) {
   const { PDFName, PDFDict, PDFArray, PDFRawStream, PDFRef, decodePDFRawStream } = PDFLib;
@@ -160,6 +161,8 @@ function ownUsedResources(page) {
       for (const key of kept.keys()) {
         if (!used.has(norm(key.asString()))) { kept.delete(key); continue; }
         if (cat === 'XObject' || cat === 'Pattern') kept.set(key, ownStream(kept.get(key), depth));
+        if (cat === 'Font') kept.set(key, ownType3(kept.get(key), depth));
+        if (cat === 'ExtGState') kept.set(key, ownSoftMask(kept.get(key), depth));
       }
       mine.set(N(cat), kept);
     }
@@ -176,6 +179,32 @@ function ownUsedResources(page) {
     const copy = st.clone(ctx);
     copy.dict.set(N('Resources'), trim(res, ops([st]), depth + 1));
     return ctx.register(copy);
+  }
+
+  // Type 3 fonts draw glyphs with CharProcs streams that use the font's own Resources.
+  function ownType3(ref, depth) {
+    const font = ctx.lookup(ref);
+    if (!(font instanceof PDFDict) || font.get(N('Subtype'))?.asString?.() !== '/Type3') return ref;
+    const res = font.lookupMaybe(N('Resources'), PDFDict);
+    const procs = font.lookupMaybe(N('CharProcs'), PDFDict);
+    if (!res) return ref;
+    if (depth > 12) throw new UserError('This PDF nests its drawings too deeply to redact safely.');
+    const glyphs = procs ? procs.keys().map((k) => ctx.lookup(procs.get(k))).filter((x) => x instanceof PDFRawStream) : [];
+    const copy = font.clone(ctx);
+    copy.set(N('Resources'), trim(res, ops(glyphs), depth + 1));
+    return ctx.register(copy);
+  }
+
+  // A graphics state's soft mask paints a transparency group (/G), which is a Form XObject.
+  function ownSoftMask(ref, depth) {
+    const gs = ctx.lookup(ref);
+    const mask = gs instanceof PDFDict && gs.lookupMaybe(N('SMask'), PDFDict);
+    if (!mask || !mask.get(N('G'))) return ref;
+    const myMask = mask.clone(ctx);
+    myMask.set(N('G'), ownStream(mask.get(N('G')), depth));
+    const myGs = gs.clone(ctx);
+    myGs.set(N('SMask'), myMask);
+    return ctx.register(myGs);
   }
 
   const contents = ctx.lookup(page.node.get(N('Contents')));
