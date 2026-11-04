@@ -22,7 +22,7 @@ Rotate PDF,edit,must,yes,yes,
 Add page numbers,edit,must,yes,yes,
 Add watermark,edit,must,yes,yes,
 Crop PDF,edit,should,yes,yes,
-Edit PDF,edit,must,yes,partial,adds text/images/shapes/drawing/white-out; cannot change text already in the PDF; standard fonts are Latin-only
+Edit PDF,edit,must,yes,yes,"edits existing text (matched size, colour, serif/sans/mono, bold/italic) plus add text/images/shapes/drawing/white-out; replaced text is covered, not deleted; standard fonts are Latin-only and can differ slightly in width"
 PDF Forms,edit,should,yes,partial,fills and flattens existing fields; cannot create new fields
 Unlock PDF,security,must,yes,yes,
 Protect PDF,security,must,yes,yes,

@@ -43,7 +43,7 @@ export async function loadPdfJs(file) {
     const data = await bytesOf(file);
     try {
       return await pdfjs.getDocument({
-        data, isEvalSupported: false, cMapUrl: '/vendor/pdfjs/cmaps/', cMapPacked: true,
+        data, isEvalSupported: false, fontExtraProperties: true /* keeps font names for Edit text */, cMapUrl: '/vendor/pdfjs/cmaps/', cMapPacked: true,
         standardFontDataUrl: '/vendor/pdfjs/standard_fonts/', wasmUrl: '/vendor/pdfjs/wasm/', iccUrl: '/vendor/pdfjs/iccs/',
       }).promise;
     } catch (e) {

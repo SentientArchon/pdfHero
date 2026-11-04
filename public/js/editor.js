@@ -18,13 +18,15 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
       state.tool = t.id;
       toolButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(tools[i].id === t.id)));
       stage.dataset.tool = t.id;
+      draw();
     },
   }, t.label));
 
+  let fontSelect;
   const styleBar = h('div', { class: 'row wrap gap-sm' },
     field('Text colour', h('input', { type: 'color', value: style.color, oninput: (e) => setStyle('color', e.target.value) })),
     field('Size', h('input', { type: 'number', min: 6, max: 144, value: style.size, class: 'w-num', oninput: (e) => setStyle('size', +e.target.value || 16) })),
-    field('Font', h('select', { oninput: (e) => setStyle('font', e.target.value) }, ...['Helvetica', 'TimesRoman', 'Courier'].map((f) => h('option', { value: f }, f.replace('TimesRoman', 'Times'))))),
+    field('Font', fontSelect = h('select', { oninput: (e) => setStyle('font', e.target.value) }, ...FONTS.map((f) => h('option', { value: f }, fontLabel(f))))),
     field('Shape fill', h('input', { type: 'color', value: style.fill, oninput: (e) => setStyle('fill', e.target.value) })),
   );
 
@@ -46,7 +48,7 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     style[k] = v;
     const it = state.items.find((i) => i.id === state.selected);
     if (!it) return;
-    if (it.type === 'text' && ['color', 'size', 'font'].includes(k)) it[k] = v;
+    if (it.type === 'text' && ['color', 'size', 'font'].includes(k)) { it[k] = v; if (k === 'size') it.h = Math.max(it.h, v * 1.3); }
     if (['rect', 'ellipse'].includes(it.type) && k === 'fill') it.fill = v;
     draw();
   }
@@ -70,6 +72,7 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     canvas.style.height = `${vp.height * state.scale}px`;
     canvas.setAttribute('aria-label', `Page ${state.page}`);
     canvasHolder.replaceChildren(canvas);
+    if (tools.some((t) => t.kind === 'edittext')) state.runs = page.rotate ? [] : await textRuns(page, vp, canvas, state.scale * devicePixelRatio);
     stage.style.width = canvas.style.width; stage.style.height = canvas.style.height;
     pageLabel.textContent = `Page ${state.page} of ${state.pages}`;
     prev.disabled = state.page === 1; next.disabled = state.page === state.pages;
@@ -78,8 +81,27 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
 
   // ----- items -> DOM -----
   function draw() {
-    overlay.replaceChildren(...state.items.filter((i) => i.page === state.page).map(itemEl));
+    const mine = state.items.filter((i) => i.page === state.page);
+    const s = state.scale;
+    const box = (b) => ({ left: `${b.x * s}px`, top: `${b.y * s}px`, width: `${b.w * s}px`, height: `${b.h * s}px` });
+    const covers = mine.filter((i) => i.cover).map((i) => h('div', { class: 'cover', 'aria-hidden': 'true', style: { ...box(i.cover), background: i.cover.bg } }));
+    const taken = new Set(mine.map((i) => i.run));
+    const hits = state.tool && tools.find((t) => t.id === state.tool)?.kind === 'edittext'
+      ? (state.runs || []).filter((r) => !taken.has(r.key)).map((r) => h('button', {
+        class: 'text-hit', type: 'button', 'aria-label': `Edit text: ${r.str}`, style: box(r.box), onclick: () => editRun(r),
+      })) : [];
+    overlay.replaceChildren(...covers, ...hits, ...mine.map(itemEl));
     onChange(state.items);
+  }
+
+  function editRun(r) {
+    const size = r.size;
+    add({ type: 'text', run: r.key, x: r.box.x - 2, y: r.baseline - size * 1.05, w: r.box.w + 8, h: size * 1.3, text: r.str,
+      color: r.color, size, font: r.font, cover: { ...r.box, x: r.box.x - 1, w: r.box.w + 2, bg: r.bg } });
+    draw();
+    const t = overlay.querySelector('.selected .item-text');
+    t.focus(); document.getSelection().selectAllChildren(t);
+    if (fontSelect) fontSelect.value = r.font;
   }
 
   function itemEl(it) {
@@ -96,7 +118,7 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     });
     if (it.type === 'text') {
       const t = h('div', { class: 'item-text', contenteditable: 'plaintext-only', spellcheck: 'false',
-        style: { color: it.color, fontSize: `${it.size * s}px`, fontFamily: cssFont(it.font) } }, it.text);
+        style: { color: it.color, fontSize: `${it.size * s}px`, ...cssFont(it.font) } }, it.text);
       t.addEventListener('input', () => { it.text = t.innerText; it.w = Math.max(it.w, t.scrollWidth / s); it.h = Math.max(it.size * 1.3, t.scrollHeight / s); onChange(state.items); });
       t.addEventListener('pointerdown', (e) => { e.stopPropagation(); select(it, false); });
       el.append(h('span', { class: 'item-grip', title: 'Drag to move', 'aria-hidden': 'true' }), t);
@@ -121,7 +143,6 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     return el;
   }
 
-  const cssFont = (f) => ({ Helvetica: 'Helvetica, Arial, sans-serif', TimesRoman: 'Times New Roman, Times, serif', Courier: 'Courier New, monospace' }[f]);
   function refocus(it) { requestAnimationFrame(() => overlay.querySelector('.selected')?.focus()); void it; }
   function select(it, redraw = true) { if (state.selected === it.id) return; state.selected = it.id; if (redraw) { draw(); refocus(it); } }
   function remove(it) { state.items = state.items.filter((i) => i !== it); state.selected = null; draw(); }
@@ -216,6 +237,10 @@ export async function applyItems(doc, items) {
     void pw;
     const X = (x) => bx + x;
     const Y = (y) => by + ph - y; // top-left -> PDF bottom-left
+    if (it.cover) {
+      const c = it.cover;
+      page.drawRectangle({ x: X(c.x), y: Y(c.y + c.h), width: c.w, height: c.h, color: hexToRgb(c.bg) });
+    }
     if (it.type === 'text' && it.text.trim()) {
       const font = (fonts[it.font] ||= await doc.embedFont(StandardFonts[it.font] || StandardFonts.Helvetica));
       it.text.split('\n').forEach((line, i) => page.drawText(safeText(font, line), {
@@ -230,4 +255,75 @@ export async function applyItems(doc, items) {
     if (it.type === 'ellipse') page.drawEllipse({ x: X(it.x + it.w / 2), y: Y(it.y + it.h / 2), xScale: it.w / 2, yScale: it.h / 2, color: hexToRgb(it.fill) });
     if (it.type === 'draw') page.drawSvgPath(it.path, { x: X(it.x), y: Y(it.y), borderColor: hexToRgb(it.color), borderWidth: it.stroke });
   }
+}
+
+// ---------- fonts ----------
+const FAMILIES = { Helvetica: ['Helvetica', 'HelveticaBold', 'HelveticaOblique', 'HelveticaBoldOblique'], TimesRoman: ['TimesRoman', 'TimesRomanBold', 'TimesRomanItalic', 'TimesRomanBoldItalic'], Courier: ['Courier', 'CourierBold', 'CourierOblique', 'CourierBoldOblique'] };
+const FONTS = Object.values(FAMILIES).flat();
+const fontLabel = (f) => f.replace('TimesRoman', 'Times').replace(/(Bold)?(Oblique|Italic)?$/, (m, b, i) => (b ? ' Bold' : '') + (i ? ' Italic' : ''));
+function cssFont(f = 'Helvetica') {
+  const fam = f.startsWith('Times') ? 'Times New Roman, Times, serif' : f.startsWith('Courier') ? 'Courier New, monospace' : 'Helvetica, Arial, sans-serif';
+  return { fontFamily: fam, fontWeight: /Bold/.test(f) ? '700' : '400', fontStyle: /Oblique|Italic/.test(f) ? 'italic' : 'normal' };
+}
+/** Closest standard font for a PDF font name + pdf.js generic family. */
+export function matchFont(name = '', generic = '') {
+  const fam = /courier|mono|consol|menlo/i.test(name) || generic === 'monospace' ? 'Courier'
+    : /times|georgia|garamond|minion|cambria|palatino|book|serif/i.test(name.replace(/sans/i, '')) || generic === 'serif' ? 'TimesRoman' : 'Helvetica';
+  const bold = /bold|black|heavy|semibold|demi/i.test(name); const ital = /italic|oblique/i.test(name);
+  return FAMILIES[fam][(bold ? 1 : 0) + (ital ? 2 : 0)];
+}
+
+// ---------- existing text ----------
+/** Group pdf.js text items into same-font runs on one baseline, with box, size, font and sampled colours. */
+async function textRuns(page, vp, canvas, k) {
+  const tc = await page.getTextContent();
+  const g = canvas.getContext('2d', { willReadFrequently: true });
+  const runs = [];
+  let cur = null;
+  tc.items.forEach((it, idx) => {
+    const [a, b, c, d, e, f] = it.transform;
+    if (!it.str || Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || a <= 0) { cur = null; return; } // skip rotated/mirrored text
+    const size = Math.abs(d) || Math.hypot(c, d);
+    const [x, y] = vp.convertToViewportPoint(e, f);
+    const gap = cur ? x - (cur.box.x + cur.box.w) : 0;
+    if (cur && cur.fontName === it.fontName && Math.abs(cur.baseline - y) < size * 0.2 && gap > -size * 0.3 && gap < size * 0.6) {
+      cur.str += (gap > size * 0.15 && !cur.str.endsWith(' ') && !it.str.startsWith(' ') ? ' ' : '') + it.str;
+      cur.box.w = x + it.width - cur.box.x;
+      return;
+    }
+    let name = '';
+    try { name = page.commonObjs.has(it.fontName) ? page.commonObjs.get(it.fontName).name || '' : ''; } catch { /* font not loaded */ }
+    cur = { key: `${page.pageNumber}:${idx}`, fontName: it.fontName, str: it.str, size, baseline: y,
+      font: matchFont(name, tc.styles[it.fontName]?.fontFamily), box: { x, y: y - size * 0.95, w: it.width, h: size * 1.25 } };
+    runs.push(cur);
+  });
+  for (const r of runs) {
+    const trimmed = r.str.replace(/\s+$/, '');
+    // pdf.js widths include trailing spaces; a space is ~0.25em, so take that off (slightly under, to stay covering)
+    if (trimmed.length < r.str.length) r.box.w = Math.max(r.box.w * 0.5, r.box.w - (r.str.length - trimmed.length) * r.size * 0.22);
+    r.str = trimmed;
+    Object.assign(r, sampleColours(g, r.box, k));
+  }
+  return runs.filter((r) => r.str.trim());
+}
+
+/** Background = median of pixels around the box; text = the pixel inside it farthest from that. */
+function sampleColours(g, box, k) {
+  const W = g.canvas.width; const H = g.canvas.height;
+  const px = (x, y) => { const d = g.getImageData(Math.max(0, Math.min(W - 1, Math.round(x * k))), Math.max(0, Math.min(H - 1, Math.round(y * k))), 1, 1).data; return [d[0], d[1], d[2]]; };
+  const ring = [];
+  for (let i = 0; i <= 8; i++) { const x = box.x + (box.w * i) / 8; ring.push(px(x, box.y - 1), px(x, box.y + box.h + 1)); }
+  ring.push(px(box.x - 2, box.y + box.h / 2), px(box.x + box.w + 2, box.y + box.h / 2));
+  const med = (i) => ring.map((p) => p[i]).sort((a, b) => a - b)[ring.length >> 1];
+  const bg = [med(0), med(1), med(2)];
+  const x0 = Math.max(0, Math.floor(box.x * k)); const y0 = Math.max(0, Math.floor(box.y * k));
+  const w = Math.max(1, Math.min(W - x0, Math.ceil(box.w * k))); const hh = Math.max(1, Math.min(H - y0, Math.ceil(box.h * k)));
+  const d = g.getImageData(x0, y0, w, hh).data;
+  let best = [0, 0, 0]; let far = -1;
+  for (let i = 0; i < d.length; i += 4) {
+    const dist = Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]);
+    if (dist > far) { far = dist; best = [d[i], d[i + 1], d[i + 2]]; }
+  }
+  const hex = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+  return { bg: hex(bg), color: hex(best) };
 }

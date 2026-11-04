@@ -94,9 +94,31 @@ test('crop', async () => {
 });
 test('edit: add text', async () => {
   await open('edit-pdf', ['a.pdf']); await page.waitForSelector('.stage canvas');
-  await page.click('.seg-btn:text("Text")'); await clickStage(100, 400); await page.keyboard.type('Hello edit');
+  await page.click('.seg-btn:text("Add text")'); await clickStage(100, 400); await page.keyboard.type('Hello edit');
   await page.click('.seg-btn:text("Rectangle")'); await dragOnStage(300, 500, 400, 560);
   assert.match(text((await run()).buf), /Hello edit/);
+});
+test('edit: change existing text', async () => {
+  await open('edit-pdf', ['a.pdf']); await page.waitForSelector('.text-hit');
+  const hits = await page.locator('.text-hit').count();
+  assert.ok(hits >= 2, `expected clickable text runs, got ${hits}`);
+  await page.click('[aria-label="Edit text: Alpha heading 1"]');
+  await page.keyboard.type('Changed title');
+  assert.equal(await page.locator('.cover').count(), 1);
+  const { buf } = await run();
+  const t = text(buf);
+  assert.match(t, /Changed title/);
+  const d = await pdf(buf);
+  assert.equal(d.getPageCount(), 5);
+  // the replacement is drawn at the original's 28pt size: 5 original headings + 1 new
+  assert.equal((rawPdf(buf).match(/ 28 Tf/g) || []).length, 6);
+});
+test('edit: removing an edit restores the original', async () => {
+  await open('edit-pdf', ['a.pdf']); await page.waitForSelector('.text-hit');
+  await page.click('[aria-label="Edit text: Alpha heading 1"]');
+  await page.click('.item.selected .item-del');
+  assert.equal(await page.locator('.cover').count(), 0);
+  assert.ok(await page.locator('[aria-label="Edit text: Alpha heading 1"]').count());
 });
 test('forms: fill and flatten', async () => {
   await open('forms', ['form.pdf']); await page.waitForSelector('.form-fields');

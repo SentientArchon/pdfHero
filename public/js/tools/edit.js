@@ -143,8 +143,9 @@ export default [
       const pickImage = () => new Promise((res) => {
         const i = h('input', { type: 'file', accept: 'image/*', onchange: () => res(i.files[0] || null) }); i.click();
       });
-      const ed = pageEditor(ctx.files[0], { tools: [
-        { id: 'text', label: 'Text', kind: 'text', styled: true },
+      const ed = pageEditor(ctx.files[0], { defaultTool: 'edittext', tools: [
+        { id: 'edittext', label: 'Edit text', kind: 'edittext', styled: true, hint: 'Click any text on the page to change it' },
+        { id: 'text', label: 'Add text', kind: 'text', styled: true },
         { id: 'image', label: 'Image', kind: 'image', pick: pickImage, hint: 'Pick an image, then click the page' },
         { id: 'rect', label: 'Rectangle', kind: 'box', type: 'rect', styled: true },
         { id: 'ellipse', label: 'Ellipse', kind: 'box', type: 'ellipse', styled: true },
@@ -152,7 +153,7 @@ export default [
         { id: 'whiteout', label: 'White-out', kind: 'box', type: 'whiteout' },
       ] });
       await ed.ready;
-      return { el: h('div', {}, h('p', { class: 'muted' }, 'Pick a tool, then click or drag on the page. Select an item and press Delete to remove it. Standard fonts cover Latin text only.'), ed.el), ed };
+      return { el: h('div', {}, h('p', { class: 'muted' }, '“Edit text”: click existing text to change it (remove the edit with × to restore the original). Other tools: click or drag on the page; select an item and press Delete to remove it. Edited text is drawn over the original, which stays underneath; use Redact PDF to remove sensitive text. Standard fonts cover Latin text only.'), ed.el), ed };
     },
     async run([f], o, ctx) {
       const items = ctx.custom.ed.state.items;
