@@ -70,9 +70,7 @@ export default [
       const js = await loadPdfJs(f);
       const doc = await PDFDocument.create();
       const hit = new Set(items.map((i) => i.page));
-      // content only redacted pages have (identical streams on untouched pages were visible anyway)
-      const shown = contentPrints(src, [...Array(src.getPageCount()).keys()].map((i) => i + 1).filter((n) => !hit.has(n)));
-      const forbidden = new Set([...contentPrints(src, hit)].filter((x) => !shown.has(x)));
+      const redactedStreams = streamPrints(src, hit); // before untouched pages are cleaned below
       for (let n = 1; n <= src.getPageCount(); n++) {
         if (!hit.has(n)) { detachPage(src.getPage(n - 1)); ownUsedResources(src.getPage(n - 1)); const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
         ctx.progress(`Flattening page ${n}…`);
@@ -89,7 +87,10 @@ export default [
       if (!o.meta) {
         for (const k of ['Title', 'Author', 'Subject', 'Creator']) { const v = src[`get${k}`](); if (v) doc[`set${k}`](v); }
       }
-      dropUnreachable(doc, forbidden);
+      // fail closed: no stream only the redacted pages had may be in the output
+      // (streams the cleaned untouched pages still use were visible on those pages anyway)
+      const shown = streamPrints(src, [...Array(src.getPageCount()).keys()].map((i) => i + 1).filter((n) => !hit.has(n)));
+      dropUnreachable(doc, new Set([...redactedStreams].filter((x) => !shown.has(x))));
       return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: await pdfBlob(doc) }];
     },
   },
@@ -149,7 +150,11 @@ function detachPage(page) {
   const N = PDFName.of; const ctx = page.node.context;
   // allowlist: everything else on the page dict is dropped (Parent stays so copyPages can resolve inherited boxes, then removes it)
   const PAGE_KEYS = ['Type', 'Parent', 'MediaBox', 'CropBox', 'BleedBox', 'TrimBox', 'ArtBox', 'Rotate', 'UserUnit', 'Contents', 'Resources', 'Annots', 'Group'];
-  for (const k of page.node.keys()) if (!PAGE_KEYS.includes(k.asString().slice(1))) page.node.delete(k);
+  for (const k of page.node.keys()) {
+    const name = k.asString().slice(1);
+    // boxes, Rotate, Group…: must be plain values; only Parent/Contents/Resources/Annots may reference objects
+    if (!PAGE_KEYS.includes(name) || (!['Parent', 'Contents', 'Resources', 'Annots'].includes(name) && hasRef(page.node.get(k)))) page.node.delete(k);
+  }
   const annots = page.node.lookupMaybe(N('Annots'), PDFArray);
   if (!annots) return;
   const ANNOT_KEYS = ['Type', 'Subtype', 'Rect', 'Contents', 'F', 'AP', 'AS', 'Border', 'C', 'BS', 'QuadPoints', 'InkList', 'L', 'Vertices', 'IC', 'CA', 'M', 'T', 'DA', 'Q', 'MK', 'H'];
@@ -162,37 +167,49 @@ function detachPage(page) {
     for (const key of ANNOT_KEYS) {
       const v = annot.get(N(key));
       if (v === undefined) continue;
-      if (key === 'AP') { mine.set(N(key), v); continue; } // appearance streams: trimmed by ownUsedResources
+      if (key === 'AP') { // only the normal/rollover/down appearances; streams are rebuilt by ownUsedResources
+        const ap = ctx.lookup(v);
+        if (!(ap instanceof PDFDict)) continue;
+        const myAp = ctx.obj({});
+        for (const st of ['N', 'R', 'D']) if (ap.get(N(st)) !== undefined) myAp.set(N(st), ap.get(N(st)));
+        mine.set(N(key), myAp);
+        continue;
+      }
       const val = ctx.lookup(v);
       // only direct values or plain arrays/dicts of numbers/names/strings: nothing that can point elsewhere
       if (plain(val) || ((val instanceof PDFArray || val instanceof PDFDict) && !hasRef(val))) mine.set(N(key), val instanceof PDFArray || val instanceof PDFDict ? val.clone(ctx) : val);
     }
     const action = annot.lookupMaybe(N('A'), PDFDict);
     const uri = action && action.lookupMaybe(N('S'), PDFName) === N('URI') ? ctx.lookup(action.get(N('URI'))) : null;
-    if (uri instanceof PDFString || uri instanceof PDFHexString) mine.set(N('A'), ctx.obj({ S: 'URI', URI: PDFString.of(uri.decodeText()) }));
+    if (uri instanceof PDFString || uri instanceof PDFHexString) mine.set(N('A'), ctx.obj({ S: 'URI', URI: PDFHexString.fromText(uri.decodeText()) })); // hex can't break out of the string
     kept.push(a instanceof PDFRef ? ctx.register(mine) : mine);
   }
   page.node.set(N('Annots'), kept);
-
-  function hasRef(v) {
-    if (v instanceof PDFRef) return true;
-    if (v instanceof PDFArray) return v.asArray().some(hasRef);
-    if (v instanceof PDFDict) return [...v.entries()].some(([, x]) => hasRef(x));
-    return false;
-  }
 }
 
-/** Fingerprints of the redacted pages' own content streams, to prove none reaches the output. */
-function contentPrints(src, pageNos) {
-  const { PDFName, PDFArray, PDFRawStream } = PDFLib;
-  const out = new Set();
-  for (const n of pageNos) {
-    const node = src.getPage(n - 1).node;
-    const c = src.context.lookup(node.get(PDFName.of('Contents')));
-    for (const st of c instanceof PDFArray ? c.asArray().map((r) => src.context.lookup(r)) : [c]) {
-      if (st instanceof PDFRawStream && st.contents.length > 16) out.add(print(st.contents));
+function hasRef(v) {
+  const { PDFRef, PDFArray, PDFDict } = PDFLib;
+  if (v instanceof PDFRef) return true;
+  if (v instanceof PDFArray) return v.asArray().some(hasRef);
+  if (v instanceof PDFDict) return [...v.entries()].some(([, x]) => hasRef(x));
+  return false;
+}
+
+/** Fingerprints of every stream reachable from these pages (not through /Parent or other pages). */
+function streamPrints(src, pageNos) {
+  const { PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream } = PDFLib;
+  const ctx = src.context; const out = new Set(); const seen = new Set();
+  const walk = (v) => {
+    if (v instanceof PDFRef) { if (seen.has(v)) return; seen.add(v); return walk(ctx.lookup(v)); }
+    if (v instanceof PDFRawStream) { if (v.contents.length > 16) out.add(print(v.contents)); return walk(v.dict); }
+    if (v instanceof PDFDict) {
+      if (v.lookupMaybe(PDFName.of('Type'), PDFName) === PDFName.of('Page')) return; // stop at other pages
+      for (const [k, x] of v.entries()) if (k !== PDFName.of('Parent')) walk(x);
+      return;
     }
-  }
+    if (v instanceof PDFArray) v.asArray().forEach(walk);
+  };
+  for (const n of pageNos) { const node = src.getPage(n - 1).node; for (const [k, x] of node.entries()) if (k !== PDFName.of('Parent')) walk(x); }
   return out;
 }
 function print(bytes) { let h = 2166136261; for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0; return `${bytes.length}:${h}`; }
@@ -235,6 +252,7 @@ function ownUsedResources(page) {
   const { PDFName, PDFDict, PDFArray, PDFRawStream, PDFRef, decodePDFRawStream } = PDFLib;
   const ctx = page.node.context;
   const N = PDFName.of;
+  // eslint-disable-next-line no-use-before-define -- hoisted helpers below
   const norm = (n) => n.replace(/#([0-9a-f]{2})/gi, (_, x) => String.fromCharCode(parseInt(x, 16)));
   const ops = (streams) => streams.map((st) => new TextDecoder('latin1').decode(st instanceof PDFRawStream ? decodePDFRawStream(st).decode() : st.getContents())).join('\n');
   const names = (text) => new Set((text.match(/\/[^\s/[\]()<>{}%]+/g) || []).map(norm));
@@ -242,32 +260,68 @@ function ownUsedResources(page) {
   // Trim `res` to names used by `text`; returns a private copy. Streams it keeps are themselves cloned and trimmed.
   function trim(res, text, depth) {
     const used = names(text);
-    const mine = res.clone(ctx);
+    const mine = ctx.obj({});
+    const procSet = res.get(N('ProcSet'));
+    if (procSet && !hasRef(procSet)) mine.set(N('ProcSet'), procSet);
     for (const cat of ['XObject', 'Font', 'ExtGState', 'Shading', 'Pattern', 'ColorSpace', 'Properties']) {
-      const d = mine.lookupMaybe(N(cat), PDFDict);
-      if (!d) continue;
-      const kept = d.clone(ctx);
+      if (!res.lookupMaybe(N(cat), PDFDict)) continue;
+      mine.set(N(cat), res.lookupMaybe(N(cat), PDFDict));
+      const kept = mine.lookupMaybe(N(cat), PDFDict).clone(ctx);
       for (const key of kept.keys()) {
         if (!used.has(norm(key.asString()))) { kept.delete(key); continue; }
         if (cat === 'XObject' || cat === 'Pattern') kept.set(key, ownStream(kept.get(key), depth));
-        if (cat === 'Font') kept.set(key, ownType3(kept.get(key), depth));
-        if (cat === 'ExtGState') kept.set(key, ownSoftMask(kept.get(key), depth));
+        else if (cat === 'Font') kept.set(key, clean(ownType3(kept.get(key), depth), depth));
+        else if (cat === 'ExtGState') kept.set(key, clean(ownSoftMask(kept.get(key), depth), depth));
+        else kept.set(key, clean(kept.get(key), depth));
       }
       mine.set(N(cat), kept);
     }
     return mine;
   }
 
-  // A stream with its own Resources (Form XObject, tiling pattern, appearance): clone it, trim its Resources.
+  // Any stream used for drawing (form, image, pattern, appearance, font file…): a copy whose dict keeps
+  // only keys a renderer needs, with every value rebuilt by `clean`; Resources trimmed to what it uses.
+  const STREAM_KEYS = new Set(['Type', 'Subtype', 'FormType', 'BBox', 'Matrix', 'Resources', 'Group', 'Filter', 'DecodeParms', 'Length',
+    'Width', 'Height', 'BitsPerComponent', 'ColorSpace', 'Decode', 'ImageMask', 'Mask', 'SMask', 'SMaskInData', 'Interpolate', 'Intent',
+    'PatternType', 'PaintType', 'TilingType', 'XStep', 'YStep', 'N', 'Alternate', 'Range', 'FunctionType', 'Domain', 'Size',
+    'BitsPerSample', 'Order', 'Encode', 'ShadingType', 'Background', 'BitsPerCoordinate', 'BitsPerFlag', 'VerticesPerRow',
+    'Function', 'Length1', 'Length2', 'Length3', 'K', 'Columns', 'Rows', 'EncodedByteAlign', 'BlackIs1', 'Predictor', 'Colors']);
   function ownStream(refOrObj, depth) {
     const st = ctx.lookup(refOrObj);
-    if (!(st instanceof PDFRawStream)) return refOrObj;
-    const res = st.dict.lookupMaybe(N('Resources'), PDFDict);
-    if (!res) return refOrObj;
+    if (!(st instanceof PDFRawStream)) return clean(refOrObj, depth);
     if (depth > 12) throw new UserError('This PDF nests its drawings too deeply to redact safely.');
-    const copy = st.clone(ctx);
-    copy.dict.set(N('Resources'), trim(res, ops([st]), depth + 1));
-    return ctx.register(copy);
+    const dict = ctx.obj({});
+    for (const [k, v] of st.dict.entries()) {
+      const name = k.asString().slice(1);
+      if (!STREAM_KEYS.has(name)) continue;
+      if (name === 'Resources') { const r = ctx.lookup(v); if (r instanceof PDFDict) dict.set(k, trim(r, ops([st]), depth + 1)); continue; }
+      dict.set(k, clean(v, depth + 1));
+    }
+    return ctx.register(PDFRawStream.of(dict, st.contents));
+  }
+
+  // Deep copy of any other value: navigation/link keys dropped, streams via ownStream, pages refused.
+  const DROP = new Set(['Parent', 'P', 'Dest', 'Dests', 'A', 'AA', 'Popup', 'IRT', 'StructParent', 'StructParents', 'Metadata', 'PieceInfo', 'Thumb', 'B', 'Annots', 'Kids', 'Next', 'First', 'Last', 'Prev']);
+  const cleaned = new Map();
+  function clean(v, depth) {
+    if (depth > 40) throw new UserError('This PDF nests its objects too deeply to redact safely.');
+    if (v instanceof PDFRef) {
+      if (cleaned.has(v)) return cleaned.get(v);
+      const target = ctx.lookup(v);
+      if (target instanceof PDFDict && target.lookupMaybe(N('Type'), PDFName) === N('Page')) throw new UserError('This PDF links its pages in a way that can’t be redacted safely. Nothing was saved.');
+      const ref = ctx.nextRef(); cleaned.set(v, ref); // placeholder first: graphs can be cyclic
+      const out = target instanceof PDFRawStream ? ctx.lookup(ownStream(target, depth)) : clean(target, depth);
+      ctx.assign(ref, out);
+      return ref;
+    }
+    if (v instanceof PDFRawStream) return ownStream(v, depth);
+    if (v instanceof PDFDict) {
+      const d = ctx.obj({});
+      for (const [k, x] of v.entries()) if (!DROP.has(k.asString().slice(1))) d.set(k, clean(x, depth + 1));
+      return d;
+    }
+    if (v instanceof PDFArray) { const a = ctx.obj([]); v.asArray().forEach((x) => a.push(clean(x, depth + 1))); return a; }
+    return v; // numbers, names, strings, booleans, null
   }
 
   // Type 3 fonts draw glyphs with CharProcs streams that use the font's own Resources.

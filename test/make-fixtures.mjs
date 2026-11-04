@@ -66,7 +66,22 @@ fs.writeFileSync(dir + 'shared.pdf', await shared.save());
   const sneaky = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 550, 200, 570], A: { S: 'URI', URI: p1.node.get(PDFName.of('Contents')) }, Foo: p1.ref }));
   p2.node.set(PDFName.of('Annots'), d.context.obj([link, note, web, sneaky]));
   p2.node.set(PDFName.of('Thumb'), p1.ref); // unknown/unsafe page keys must not survive either
+  p2.node.set(PDFName.of('Group'), d.context.obj({ S: 'Transparency', CS: 'DeviceRGB', Leak: p1.node.get(PDFName.of('Contents')) }));
+  const apStream = d.context.register(d.context.stream('0 0 1 rg 0 0 10 10 re f', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 10, 10], Foo: p1.node.get(PDFName.of('Contents')) }));
+  const stamp = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 300, 310, 310], AP: { N: apStream, X: p1.node.get(PDFName.of('Contents')) } }));
+  d.context.lookup(p2.node.get(PDFName.of('Annots'))).push(stamp);
   fs.writeFileSync(dir + 'linked.pdf', await d.save());
+}
+// Text in an embedded *subset* of a real font, as most PDFs have it.
+{
+  const georgia = '/System/Library/Fonts/Supplemental/Georgia.ttf';
+  if (fs.existsSync(georgia)) {
+    const fontkit = (await import('@pdf-lib/fontkit')).default;
+    const d = await PDFDocument.create(); d.registerFontkit(fontkit);
+    const f = await d.embedFont(fs.readFileSync(georgia), { subset: true });
+    d.addPage([595, 842]).drawText('Georgia sample line', { x: 50, y: 760, size: 18, font: f });
+    fs.writeFileSync(dir + 'georgia.pdf', await d.save());
+  }
 }
 fs.writeFileSync(dir + 'page.html', '<!doctype html><h1>Hello from HTML</h1><p>Converted locally.</p>');
 // 2x2 red PNG
