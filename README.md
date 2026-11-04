@@ -27,7 +27,7 @@ npm start       # then open http://127.0.0.1:4321
 
 ```bash
 npm start &
-npm test        # 50 end-to-end checks in headless Chrome
+npm test        # 50 end-to-end checks, in headless Chrome and in WebKit (Safari)
 ```
 
 The tests use the `qpdf` and `gs` command-line tools to inspect output files (`brew install qpdf ghostscript`). The app itself doesn't need them.

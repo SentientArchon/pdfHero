@@ -6,18 +6,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { chromium } from 'playwright-core';
+import { chromium, webkit } from 'playwright-core';
 import { PDFDocument } from 'pdf-lib';
 
 const BASE = process.env.BASE || 'http://127.0.0.1:4321/';
+const WEBKIT = process.env.BROWSER === 'webkit'; // Safari's engine
+// Older Safari lacks the newest JS built-ins; remove them so the tests prove the site copes without.
+const OLD_SAFARI = () => { for (const [o, k] of [[Map.prototype, 'getOrInsert'], [Map.prototype, 'getOrInsertComputed'], [WeakMap.prototype, 'getOrInsertComputed'], [Math, 'sumPrecise'], [Uint8Array, 'fromBase64'], [Uint8Array.prototype, 'toHex']]) delete o[k]; };
 const FIX = new URL('./fixtures/', import.meta.url).pathname;
 let browser; let page; const errors = [];
 
 before(async () => {
   execFileSync('node', [new URL('./make-fixtures.mjs', import.meta.url).pathname]);
-  browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+  browser = WEBKIT ? await webkit.launch() : await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 1000 } });
-  await context.grantPermissions(['local-fonts']).catch(() => {}); // Edit PDF reads installed fonts with permission
+  if (!WEBKIT) await context.grantPermissions(['local-fonts']); // Edit PDF reads installed fonts with permission (Chrome only)
+  if (WEBKIT) await context.addInitScript(OLD_SAFARI);
   page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
   // count requests that actually reached a server (a CSP-blocked attempt still fires 'request', but gets no response)
@@ -129,8 +133,10 @@ test('edit: replacement text uses the document\'s own font', { skip: !fs.existsS
   await page.keyboard.type('sample line');            // letters all in the PDF's subset
   await page.waitForFunction(() => /from this PDF/.test(document.querySelector('.font-note').textContent));
   await page.keyboard.press('End'); await page.keyboard.type(' Ωxyz ñ');  // not in the subset -> installed copy
-  await page.waitForFunction(() => /installed on this device/.test(document.querySelector('.font-note').textContent));
+  // Safari can't read installed fonts (no Local Font Access API), so there it falls back to a standard font
+  await page.waitForFunction((wk) => (wk ? /standard stand-in/ : /installed on this device/).test(document.querySelector('.font-note').textContent), WEBKIT);
   const { buf } = await run();
+  if (WEBKIT) return; // Times stand-in can't draw Ω; covered in Chrome
   assert.match(text(buf), /sample line Ωxyz ñ/);
   assert.match(rawPdf(buf), /\/BaseFont \/\S*Georgia/);
   assert.doesNotMatch(rawPdf(buf), /\/BaseFont \/Helvetica/);
@@ -256,6 +262,6 @@ test('wrong file type is rejected', async () => { await page.goto(`${BASE}#/merg
 
 test('no console errors and nothing contacted outside the site', async () => {
   // the HTML security test triggers these on purpose: they are the protections working
-  const expected = /Not allowed to load local resource|violates the following Content Security Policy|Blocked script execution in 'about:srcdoc'/;
+  const expected = /Not allowed to load local resource|violates the following Content Security Policy|Blocked script execution in 'about:srcdoc'|Refused to load .* Content Security Policy/; // Chrome and Safari wording
   assert.deepEqual(errors.filter((e) => !/Failed to load resource.*(400|404)/.test(e) && !expected.test(e)), []);
 });

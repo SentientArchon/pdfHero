@@ -7,7 +7,10 @@ const out = path.join(root, 'public/vendor');
 fs.rmSync(out, { recursive: true, force: true });
 const copy = (from, to) => { fs.mkdirSync(path.dirname(path.join(out, to)), { recursive: true }); fs.cpSync(nm(from), path.join(out, to), { recursive: true }); };
 
-for (const d of ['build/pdf.min.mjs', 'build/pdf.worker.min.mjs', 'cmaps', 'standard_fonts', 'wasm', 'iccs']) copy(`pdfjs-dist/${d}`, `pdfjs/${d}`);
+// pdf.js "legacy" build: same API, but it brings its own versions of very new JS built-ins
+// (Map#getOrInsertComputed, Math.sumPrecise, …) that Safari releases may not have yet.
+for (const d of ['pdf.min.mjs', 'pdf.worker.min.mjs']) copy(`pdfjs-dist/legacy/build/${d}`, `pdfjs/build/${d}`);
+for (const d of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) copy(`pdfjs-dist/${d}`, `pdfjs/${d}`);
 copy('pdf-lib/dist/pdf-lib.esm.min.js', 'pdf-lib.js');
 copy('jszip/dist/jszip.min.js', 'jszip.js');
 copy('@pdf-lib/fontkit/dist/fontkit.umd.min.js', 'fontkit.js');

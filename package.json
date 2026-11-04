@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node scripts/vendor.mjs",
     "start": "node scripts/vendor.mjs && node server.js",
-    "test": "node --test test/e2e.test.mjs",
+    "test": "node --test test/e2e.test.mjs && BROWSER=webkit node --test test/e2e.test.mjs",
     "deploy": "node scripts/deploy.mjs"
   },
   "keywords": [],
