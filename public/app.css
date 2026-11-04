@@ -138,6 +138,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); m
 .item.selected .item-del, .item.selected .item-handle, .item:hover .item-del, .item:hover .item-handle { display: block; }
 .item-del { top: -12px; right: -12px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: var(--danger); color: var(--on-accent); cursor: pointer; line-height: 1; font-size: var(--fs-sm); }
 .item-handle { right: -6px; bottom: -6px; width: 12px; height: 12px; background: var(--accent); border-radius: 2px; cursor: nwse-resize; }
+.font-note { flex-basis: 100%; }
 .cover { position: absolute; pointer-events: none; }
 .text-hit { position: absolute; padding: 0; border: 0; background: transparent; cursor: text; border-radius: 2px; }
 .text-hit:hover, .text-hit:focus-visible { background: var(--overlay-select); outline: 1px solid var(--accent); }

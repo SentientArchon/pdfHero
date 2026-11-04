@@ -8,6 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import fontkit from '@pdf-lib/fontkit';
 
 const run = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -117,6 +118,34 @@ async function qpdf(args) {
   }
 }
 
+// ---- installed fonts, so edited text can use the document's real typeface ----
+const FONT_DIRS = ['/System/Library/Fonts', '/System/Library/Fonts/Supplemental', '/Library/Fonts', path.join(os.homedir(), 'Library/Fonts'),
+  '/Applications/Microsoft Word.app/Contents/Resources/DFonts'];
+// "ABCDEF+Arial,Bold" / "Arial-BoldMT" / "Arial Bold" -> "arialbold"
+const normFont = (n) => String(n).replace(/^[A-Z]{6}\+/, '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(mt|ps)$/, '');
+let fontIndex;
+async function fonts() {
+  if (fontIndex) return fontIndex;
+  fontIndex = new Map();
+  for (const dir of FONT_DIRS) {
+    let names = [];
+    try { names = await fs.readdir(dir); } catch { continue; }
+    for (const n of names) {
+      if (!/\.(ttf|otf)$/i.test(n)) continue; // shortcut: .ttc collections skipped, pdf-lib can only embed single fonts
+      const file = path.join(dir, n);
+      try {
+        const f = fontkit.create(await fs.readFile(file));
+        for (const key of [f.postscriptName, f.fullName, `${f.familyName} ${f.subfamilyName}`]) {
+          const k = key && normFont(key);
+          if (k && !fontIndex.has(k)) fontIndex.set(k, file);
+        }
+        if (/^regular$/i.test(f.subfamilyName) && !fontIndex.has(normFont(f.familyName))) fontIndex.set(normFont(f.familyName), file);
+      } catch { /* unreadable font file */ }
+    }
+  }
+  return fontIndex;
+}
+
 async function health() {
   const tools = {};
   for (const k of ['gs', 'qpdf', 'ocrmypdf', 'soffice', 'chrome']) tools[k] = await has(BIN[k]);
@@ -166,6 +195,7 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/ja
 const STATIC = [
   ['/vendor/pdfjs/', path.join(ROOT, 'node_modules/pdfjs-dist/')],
   ['/vendor/pdf-lib.js', path.join(ROOT, 'node_modules/pdf-lib/dist/pdf-lib.esm.min.js')],
+  ['/vendor/fontkit.js', path.join(ROOT, 'node_modules/@pdf-lib/fontkit/dist/fontkit.umd.min.js')],
   ['/vendor/jszip.js', path.join(ROOT, 'node_modules/jszip/dist/jszip.min.js')],
   ['/', path.join(ROOT, 'public/')],
 ];
@@ -204,6 +234,13 @@ const server = http.createServer(async (req, res) => {
       if (!html) return send(res, 404, 'Not found');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': RENDER_CSP, 'X-Content-Type-Options': 'nosniff' });
       return res.end(html);
+    }
+    if (url.pathname === '/api/font') {
+      const file = (await fonts()).get(normFont(url.searchParams.get('name') || ''));
+      if (!file) { res.writeHead(204); return res.end(); } // not installed: a normal answer, not an error
+      const data = await fs.readFile(file);
+      res.writeHead(200, { 'Content-Type': 'font/sfnt', 'Content-Length': data.length, 'Cache-Control': 'max-age=3600' });
+      return res.end(data);
     }
     if (url.pathname.startsWith('/api/')) {
       if (req.method !== 'POST') return send(res, 405, 'POST only');

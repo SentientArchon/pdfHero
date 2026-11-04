@@ -20,7 +20,7 @@ Tools that need a converter you haven't installed show the install command on th
 
 ```bash
 npm start &
-npm test        # 46 end-to-end checks in headless Chrome
+npm test        # 49 end-to-end checks in headless Chrome
 ```
 
 ## Not included

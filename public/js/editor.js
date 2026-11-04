@@ -23,7 +23,8 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
   }, t.label));
 
   let fontSelect;
-  const styleBar = h('div', { class: 'row wrap gap-sm' },
+  const fontNote = h('span', { class: 'muted font-note', 'aria-live': 'polite' });
+  const styleBar = h('div', { class: 'row wrap gap-sm' }, fontNote,
     field('Text colour', h('input', { type: 'color', value: style.color, oninput: (e) => setStyle('color', e.target.value) })),
     field('Size', h('input', { type: 'number', min: 6, max: 144, value: style.size, class: 'w-num', oninput: (e) => setStyle('size', +e.target.value || 16) })),
     field('Font', fontSelect = h('select', { oninput: (e) => setStyle('font', e.target.value) }, ...FONTS.map((f) => h('option', { value: f }, fontLabel(f))))),
@@ -48,7 +49,12 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     style[k] = v;
     const it = state.items.find((i) => i.id === state.selected);
     if (!it) return;
-    if (it.type === 'text' && ['color', 'size', 'font'].includes(k)) { it[k] = v; if (k === 'size') it.h = Math.max(it.h, v * 1.3); }
+    if (it.type === 'text' && ['color', 'size', 'font'].includes(k)) {
+      it[k] = v;
+      if (k === 'size') it.h = Math.max(it.h, v * 1.3);
+      if (k === 'font') delete it.srcFont; // the user picked a font: stop using the document's own
+      noteFont(it);
+    }
     if (['rect', 'ellipse'].includes(it.type) && k === 'fill') it.fill = v;
     draw();
   }
@@ -97,11 +103,20 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
   function editRun(r) {
     const size = r.size;
     add({ type: 'text', run: r.key, x: r.box.x - 2, y: r.baseline - size * 1.05, w: r.box.w + 8, h: size * 1.3, text: r.str,
-      color: r.color, size, font: r.font, cover: { ...r.box, x: r.box.x - 1, w: r.box.w + 2, bg: r.bg } });
+      color: r.color, size, font: r.font, srcFont: r.src ? { ...r.src, sample: r.str } : null, cover: { ...r.box, x: r.box.x - 1, w: r.box.w + 2, bg: r.bg } });
     draw();
     const t = overlay.querySelector('.selected .item-text');
     t.focus(); document.getSelection().selectAllChildren(t);
     if (fontSelect) fontSelect.value = r.font;
+    noteFont(state.items.find((i) => i.id === state.selected));
+  }
+
+  async function noteFont(it) {
+    if (!it || it.type !== 'text') { fontNote.textContent = ''; return; }
+    const r = await resolveFont(it);
+    it.preview = r.bytes ? await faceFor(r) : null;
+    const el = overlay.querySelector('.selected .item-text');
+    if (el && state.items.find((i) => i.id === state.selected) === it) { Object.assign(el.style, previewFont(it)); fontNote.textContent = r.label; }
   }
 
   function itemEl(it) {
@@ -118,9 +133,9 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     });
     if (it.type === 'text') {
       const t = h('div', { class: 'item-text', contenteditable: 'plaintext-only', spellcheck: 'false',
-        style: { color: it.color, fontSize: `${it.size * s}px`, ...cssFont(it.font) } }, it.text);
-      t.addEventListener('input', () => { it.text = t.innerText; it.w = Math.max(it.w, t.scrollWidth / s); it.h = Math.max(it.size * 1.3, t.scrollHeight / s); onChange(state.items); });
-      t.addEventListener('pointerdown', (e) => { e.stopPropagation(); select(it, false); });
+        style: { color: it.color, fontSize: `${it.size * s}px`, ...previewFont(it) } }, it.text);
+      t.addEventListener('input', () => { it.text = t.innerText; noteFont(it); it.w = Math.max(it.w, t.scrollWidth / s); it.h = Math.max(it.size * 1.3, t.scrollHeight / s); onChange(state.items); });
+      t.addEventListener('pointerdown', (e) => { e.stopPropagation(); select(it, false); noteFont(it); });
       el.append(h('span', { class: 'item-grip', title: 'Drag to move', 'aria-hidden': 'true' }), t);
     }
     if (it.type === 'image') el.append(h('img', { src: it.url, alt: 'Placed image', draggable: 'false' }));
@@ -242,8 +257,13 @@ export async function applyItems(doc, items) {
       page.drawRectangle({ x: X(c.x), y: Y(c.y + c.h), width: c.w, height: c.h, color: hexToRgb(c.bg) });
     }
     if (it.type === 'text' && it.text.trim()) {
-      const font = (fonts[it.font] ||= await doc.embedFont(StandardFonts[it.font] || StandardFonts.Helvetica));
-      it.text.split('\n').forEach((line, i) => page.drawText(safeText(font, line), {
+      const r = await resolveFont(it);
+      let font;
+      if (r.bytes) {
+        if (!fonts.kit) { doc.registerFontkit(window.fontkit); fonts.kit = true; }
+        font = (fonts[r.key] ||= await doc.embedFont(r.bytes, { subset: false }));
+      } else font = (fonts[it.font] ||= await doc.embedFont(StandardFonts[it.font] || StandardFonts.Helvetica));
+      it.text.split('\n').forEach((line, i) => page.drawText(r.bytes ? line : safeText(font, line), {
         x: X(it.x + 2), y: Y(it.y + it.size * (1.05 + i * 1.2)), size: it.size, font, color: hexToRgb(it.color),
       }));
     }
@@ -291,9 +311,11 @@ async function textRuns(page, vp, canvas, k) {
       cur.box.w = x + it.width - cur.box.x;
       return;
     }
-    let name = '';
-    try { name = page.commonObjs.has(it.fontName) ? page.commonObjs.get(it.fontName).name || '' : ''; } catch { /* font not loaded */ }
+    let fo = null;
+    try { fo = page.commonObjs.has(it.fontName) ? page.commonObjs.get(it.fontName) : null; } catch { /* font not loaded */ }
+    const name = fo?.name || '';
     cur = { key: `${page.pageNumber}:${idx}`, fontName: it.fontName, str: it.str, size, baseline: y,
+      src: name ? { name, loadedName: fo.loadedName, data: fo.data || null } : null,
       font: matchFont(name, tc.styles[it.fontName]?.fontFamily), box: { x, y: y - size * 0.95, w: it.width, h: size * 1.25 } };
     runs.push(cur);
   });
@@ -326,4 +348,49 @@ function sampleColours(g, box, k) {
   }
   const hex = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
   return { bg: hex(bg), color: hex(best) };
+}
+
+// ---------- which font to write edited text in ----------
+const kitCache = new Map(); // key -> fontkit font | null
+async function kit(key, getBytes) {
+  if (!kitCache.has(key)) {
+    kitCache.set(key, (async () => {
+      try { const bytes = await getBytes(); if (!bytes) return null; return { bytes, font: window.fontkit.create(bytes) }; } catch { return null; }
+    })());
+  }
+  return kitCache.get(key);
+}
+const covers = (k, text) => [...text].every((ch) => /\s/.test(ch) || k.font.hasGlyphForCodePoint(ch.codePointAt(0)));
+
+/**
+ * 1. the font embedded in the PDF, if it maps the original text correctly and has every new letter
+ *    (embedded fonts are usually subsets);  2. the same font installed on this Mac;  3. a standard font.
+ */
+export async function resolveFont(it) {
+  const std = { label: `Font: ${fontLabel(it.font)} (standard stand-in)` };
+  const src = it.srcFont;
+  if (!src || !window.fontkit) return std;
+  const bare = src.name.replace(/^[A-Z]{6}\+/, '').replace(/-\d{3,6}$/, ''); // "ABCDEF+Georgia", "Georgia-9742" (pdf-lib)
+  if (src.data) {
+    const k = await kit(`pdf:${src.loadedName}`, () => src.data);
+    if (k && covers(k, src.sample) && covers(k, it.text)) return { key: `pdf:${src.loadedName}`, bytes: k.bytes, label: `Font: ${bare} (from this PDF)` };
+  }
+  const k = await kit(`sys:${bare}`, async () => {
+    const res = await fetch(`/api/font?name=${encodeURIComponent(bare)}`);
+    return res.status === 200 ? new Uint8Array(await res.arrayBuffer()) : null;
+  });
+  if (k && covers(k, it.text)) return { key: `sys:${bare}`, bytes: k.bytes, label: `Font: ${bare} (installed on this Mac${src.data ? '; the PDF’s copy lacks some letters' : ''})` };
+  if (!k && /^(helvetica|times|courier)/i.test(bare)) return { label: `Font: ${fontLabel(it.font)} (a standard PDF font, same as the original)` };
+  return { label: `Font: ${fontLabel(it.font)} (standard stand-in: ${bare} ${k ? 'lacks some letters' : 'isn’t installed'})` };
+}
+
+const previewFont = (it) => (it.preview ? { fontFamily: `"${it.preview}", ${cssFont(it.font).fontFamily}`, fontWeight: 'normal', fontStyle: 'normal' } : cssFont(it.font));
+const faces = new Map();
+/** Load the chosen font into the page so the preview matches what will be written. */
+function faceFor(r) {
+  if (!faces.has(r.key)) {
+    const name = `edit-${faces.size}`;
+    faces.set(r.key, new FontFace(name, r.bytes).load().then((f) => { document.fonts.add(f); return name; }).catch(() => null));
+  }
+  return faces.get(r.key);
 }

@@ -120,6 +120,25 @@ test('edit: removing an edit restores the original', async () => {
   assert.equal(await page.locator('.cover').count(), 0);
   assert.ok(await page.locator('[aria-label="Edit text: Alpha heading 1"]').count());
 });
+test('edit: replacement text uses the document\'s own font', { skip: !fs.existsSync('/System/Library/Fonts/Supplemental/Georgia.ttf') }, async () => {
+  await open('edit-pdf', ['georgia.pdf']); await page.waitForSelector('.text-hit');
+  await page.click('[aria-label="Edit text: Georgia sample line"]');
+  await page.keyboard.type('sample line');            // letters all in the PDF's subset
+  await page.waitForFunction(() => /from this PDF/.test(document.querySelector('.font-note').textContent));
+  await page.keyboard.press('End'); await page.keyboard.type(' Ωxyz ñ');  // not in the subset -> installed copy
+  await page.waitForFunction(() => /installed on this Mac/.test(document.querySelector('.font-note').textContent));
+  const { buf } = await run();
+  assert.match(text(buf), /sample line Ωxyz ñ/);
+  assert.match(rawPdf(buf), /\/BaseFont \/\S*Georgia/);
+  assert.doesNotMatch(rawPdf(buf), /\/BaseFont \/Helvetica/);
+});
+test('edit: picking a font by hand overrides the document font', { skip: !fs.existsSync('/System/Library/Fonts/Supplemental/Georgia.ttf') }, async () => {
+  await open('edit-pdf', ['georgia.pdf']); await page.waitForSelector('.text-hit');
+  await page.click('[aria-label="Edit text: Georgia sample line"]'); await page.keyboard.type('Plain');
+  await page.selectOption('.mini-field select', 'Courier');
+  await page.waitForFunction(() => /standard stand-in/.test(document.querySelector('.font-note').textContent));
+  assert.match(rawPdf((await run()).buf), /\/BaseFont \/Courier/);
+});
 test('forms: fill and flatten', async () => {
   await open('forms', ['form.pdf']); await page.waitForSelector('.form-fields');
   await page.fill('#ff-0', 'Ada Lovelace'); await page.check('#ff-1');
@@ -179,7 +198,8 @@ test('redact: links and annotations pointing at a redacted page do not pull it b
   const raw = rawPdf(buf);
   assert.doesNotMatch(raw, hex);
   assert.equal((raw.match(/\/Type \/Page\b/g) || []).length, 2);
-  assert.match(raw, /example\.com/); // web links survive
+  const utf16hex = (t) => [...t].map((c) => c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+  assert.match(raw, new RegExp(`example\\.com|${utf16hex('example.com')}`, 'i')); // web links survive (stored hex-encoded)
   assert.match(text(buf), /Linked two public/);
 });
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
