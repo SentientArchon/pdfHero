@@ -63,7 +63,9 @@ fs.writeFileSync(dir + 'shared.pdf', await shared.save());
   const link = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 700, 200, 720], Dest: [p1.ref, 'Fit'], P: p2.ref }));
   const note = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [50, 650, 70, 670], Contents: PDFHexString.fromText('note'), P: p1.ref }));
   const web = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 600, 200, 620], A: { S: 'URI', URI: PDFString.of('https://example.com') } }));
-  p2.node.set(PDFName.of('Annots'), d.context.obj([link, note, web]));
+  const sneaky = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 550, 200, 570], A: { S: 'URI', URI: p1.node.get(PDFName.of('Contents')) }, Foo: p1.ref }));
+  p2.node.set(PDFName.of('Annots'), d.context.obj([link, note, web, sneaky]));
+  p2.node.set(PDFName.of('Thumb'), p1.ref); // unknown/unsafe page keys must not survive either
   fs.writeFileSync(dir + 'linked.pdf', await d.save());
 }
 fs.writeFileSync(dir + 'page.html', '<!doctype html><h1>Hello from HTML</h1><p>Converted locally.</p>');

@@ -70,6 +70,9 @@ export default [
       const js = await loadPdfJs(f);
       const doc = await PDFDocument.create();
       const hit = new Set(items.map((i) => i.page));
+      // content only redacted pages have (identical streams on untouched pages were visible anyway)
+      const shown = contentPrints(src, [...Array(src.getPageCount()).keys()].map((i) => i + 1).filter((n) => !hit.has(n)));
+      const forbidden = new Set([...contentPrints(src, hit)].filter((x) => !shown.has(x)));
       for (let n = 1; n <= src.getPageCount(); n++) {
         if (!hit.has(n)) { detachPage(src.getPage(n - 1)); ownUsedResources(src.getPage(n - 1)); const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
         ctx.progress(`Flattening page ${n}…`);
@@ -86,7 +89,7 @@ export default [
       if (!o.meta) {
         for (const k of ['Title', 'Author', 'Subject', 'Creator']) { const v = src[`get${k}`](); if (v) doc[`set${k}`](v); }
       }
-      dropUnreachable(doc);
+      dropUnreachable(doc, forbidden);
       return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: await pdfBlob(doc) }];
     },
   },
@@ -142,31 +145,64 @@ export default [
  * redacted page (and its content) into the output. Links to web addresses are kept.
  */
 function detachPage(page) {
-  const { PDFName, PDFDict, PDFArray, PDFRef } = PDFLib;
+  const { PDFName, PDFDict, PDFArray, PDFRef, PDFString, PDFHexString, PDFNumber, PDFBool } = PDFLib;
   const N = PDFName.of; const ctx = page.node.context;
-  for (const k of ['B', 'Thumb', 'Metadata', 'StructParents', 'PieceInfo', 'AA', 'Tabs']) page.node.delete(N(k));
+  // allowlist: everything else on the page dict is dropped (Parent stays so copyPages can resolve inherited boxes, then removes it)
+  const PAGE_KEYS = ['Type', 'Parent', 'MediaBox', 'CropBox', 'BleedBox', 'TrimBox', 'ArtBox', 'Rotate', 'UserUnit', 'Contents', 'Resources', 'Annots', 'Group'];
+  for (const k of page.node.keys()) if (!PAGE_KEYS.includes(k.asString().slice(1))) page.node.delete(k);
   const annots = page.node.lookupMaybe(N('Annots'), PDFArray);
   if (!annots) return;
+  const ANNOT_KEYS = ['Type', 'Subtype', 'Rect', 'Contents', 'F', 'AP', 'AS', 'Border', 'C', 'BS', 'QuadPoints', 'InkList', 'L', 'Vertices', 'IC', 'CA', 'M', 'T', 'DA', 'Q', 'MK', 'H'];
+  const plain = (v) => v instanceof PDFString || v instanceof PDFHexString || v instanceof PDFNumber || v instanceof PDFBool || v instanceof PDFName;
   const kept = ctx.obj([]);
   for (const a of annots.asArray()) {
     const annot = ctx.lookup(a);
     if (!(annot instanceof PDFDict) || annot.lookupMaybe(N('Subtype'), PDFName) === N('Popup')) continue;
-    const mine = annot.clone(ctx);
-    for (const k of ['P', 'Popup', 'IRT', 'Parent', 'Dest', 'StructParent', 'AA', 'Kids', 'Opt']) mine.delete(N(k));
-    const action = mine.lookupMaybe(N('A'), PDFDict);
-    if (action && action.lookupMaybe(N('S'), PDFName) !== N('URI')) mine.delete(N('A'));
-    else if (action) mine.set(N('A'), ctx.obj({ S: 'URI', URI: action.get(N('URI')) }));
+    const mine = ctx.obj({});
+    for (const key of ANNOT_KEYS) {
+      const v = annot.get(N(key));
+      if (v === undefined) continue;
+      if (key === 'AP') { mine.set(N(key), v); continue; } // appearance streams: trimmed by ownUsedResources
+      const val = ctx.lookup(v);
+      // only direct values or plain arrays/dicts of numbers/names/strings: nothing that can point elsewhere
+      if (plain(val) || ((val instanceof PDFArray || val instanceof PDFDict) && !hasRef(val))) mine.set(N(key), val instanceof PDFArray || val instanceof PDFDict ? val.clone(ctx) : val);
+    }
+    const action = annot.lookupMaybe(N('A'), PDFDict);
+    const uri = action && action.lookupMaybe(N('S'), PDFName) === N('URI') ? ctx.lookup(action.get(N('URI'))) : null;
+    if (uri instanceof PDFString || uri instanceof PDFHexString) mine.set(N('A'), ctx.obj({ S: 'URI', URI: PDFString.of(uri.decodeText()) }));
     kept.push(a instanceof PDFRef ? ctx.register(mine) : mine);
   }
   page.node.set(N('Annots'), kept);
+
+  function hasRef(v) {
+    if (v instanceof PDFRef) return true;
+    if (v instanceof PDFArray) return v.asArray().some(hasRef);
+    if (v instanceof PDFDict) return [...v.entries()].some(([, x]) => hasRef(x));
+    return false;
+  }
 }
+
+/** Fingerprints of the redacted pages' own content streams, to prove none reaches the output. */
+function contentPrints(src, pageNos) {
+  const { PDFName, PDFArray, PDFRawStream } = PDFLib;
+  const out = new Set();
+  for (const n of pageNos) {
+    const node = src.getPage(n - 1).node;
+    const c = src.context.lookup(node.get(PDFName.of('Contents')));
+    for (const st of c instanceof PDFArray ? c.asArray().map((r) => src.context.lookup(r)) : [c]) {
+      if (st instanceof PDFRawStream && st.contents.length > 16) out.add(print(st.contents));
+    }
+  }
+  return out;
+}
+function print(bytes) { let h = 2166136261; for (const b of bytes) h = Math.imul(h ^ b, 16777619) >>> 0; return `${bytes.length}:${h}`; }
 
 /**
  * Fail closed: delete every object the new document does not reach (pdf-lib saves all objects in
  * its context), then refuse to save if any page dict outside the page tree is still reachable.
  */
-function dropUnreachable(doc) {
-  const { PDFDict, PDFArray, PDFRef, PDFStream, PDFName } = PDFLib;
+function dropUnreachable(doc, forbidden = new Set()) {
+  const { PDFDict, PDFArray, PDFRef, PDFStream, PDFName, PDFRawStream } = PDFLib;
   const ctx = doc.context;
   const seen = new Set();
   const walk = (v) => {
@@ -181,6 +217,9 @@ function dropUnreachable(doc) {
   for (const [ref, obj] of ctx.enumerateIndirectObjects()) {
     if (obj instanceof PDFDict && obj.lookupMaybe(PDFName.of('Type'), PDFName) === PDFName.of('Page') && !pages.has(ref)) {
       throw new UserError('This PDF links its pages in a way that can’t be redacted safely. Nothing was saved.');
+    }
+    if (obj instanceof PDFRawStream && forbidden.has(print(obj.contents))) {
+      throw new UserError('Content from a redacted page would have stayed in the file, so nothing was saved.');
     }
   }
 }
