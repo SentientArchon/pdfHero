@@ -7,6 +7,7 @@ import { existsSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const run = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -74,14 +75,13 @@ const OPS = {
   pdf2ppt: { needs: ['gs', 'python:pptx'], ext: 'pptx', async run(i, o) { await run(BIN.python, [PY, 'ppt', i, o], { timeout: 30 * 60e3 }); } },
   html2pdf: { needs: ['chrome'], ext: 'pdf', input: 'keep', optionalBody: true, async run(i, o, q, h, dir) {
     let target = null;
+    let token = null;
     if (i) {
-      // Untrusted HTML on a file:// origin could pull other local files into the PDF: lock it down.
-      const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">`;
-      let html = await fs.readFile(i, 'utf8');
-      html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + csp)
-        : /<!doctype[^>]*>/i.test(html) ? html.replace(/<!doctype[^>]*>/i, (m) => m + csp) : csp + html;
-      await fs.writeFile(i, html);
-      target = `file://${i}`; // default-src 'none' also blocks scripts (Chrome's scriptEnabled flag breaks printing)
+      // Serve the untrusted HTML over http with a CSP *header*: no file:// origin, nothing loaded but
+      // inline styles and data: images, scripts off (sandbox), and Chrome blocks http -> file:// navigation.
+      token = randomUUID();
+      RENDER.set(token, await fs.readFile(i));
+      target = `http://127.0.0.1:${PORT}/_render/${token}`;
     }
     if (q.url) {
       const u = new URL(q.url); // throws on garbage
@@ -89,12 +89,16 @@ const OPS = {
       target = u.href;
     }
     if (!target) throw new UserError('Give a URL or an HTML file.');
-    await run(BIN.chrome, ['--headless', '--disable-gpu', '--no-pdf-header-footer', `--user-data-dir=${dir}/chrome`,
-      '--virtual-time-budget=8000', `--print-to-pdf=${o}`, target], { timeout: 2 * 60e3 });
+    try {
+      await run(BIN.chrome, ['--headless', '--disable-gpu', '--no-pdf-header-footer', `--user-data-dir=${dir}/chrome`,
+        '--virtual-time-budget=8000', `--print-to-pdf=${o}`, target], { timeout: 2 * 60e3 });
+    } finally { RENDER.delete(token); }
   } },
 };
 
 class UserError extends Error {}
+const RENDER = new Map(); // token -> uploaded HTML, only while Chrome prints it
+const RENDER_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox; base-uri 'none'; form-action 'none'";
 // Passwords arrive URI-encoded so non-ASCII survives HTTP headers.
 const pwd = (v) => (v ? decodeURIComponent(v) : '');
 
@@ -194,6 +198,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(await health()));
+    }
+    if (url.pathname.startsWith('/_render/')) {
+      const html = RENDER.get(url.pathname.slice(9));
+      if (!html) return send(res, 404, 'Not found');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': RENDER_CSP, 'X-Content-Type-Options': 'nosniff' });
+      return res.end(html);
     }
     if (url.pathname.startsWith('/api/')) {
       if (req.method !== 'POST') return send(res, 405, 'POST only');

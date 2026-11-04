@@ -1,5 +1,5 @@
 // Builds sample inputs for the e2e test.
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFName } from 'pdf-lib';
 import fs from 'node:fs';
 const dir = new URL('./fixtures/', import.meta.url).pathname;
 async function doc(n, label) {
@@ -18,6 +18,14 @@ const form = await doc(1, 'Form'); const fm = form.getForm();
 fm.createTextField('full_name').addToPage(form.getPage(0), { x: 50, y: 300, width: 200, height: 24 });
 fm.createCheckBox('agree').addToPage(form.getPage(0), { x: 50, y: 260, width: 16, height: 16 });
 fs.writeFileSync(dir + 'form.pdf', await form.save());
+// Two pages sharing one Resources dict; the 2x2 image is only drawn on page 1.
+const shared = await PDFDocument.create(); const sf = await shared.embedFont(StandardFonts.Helvetica);
+const png = await shared.embedPng(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
+const s1 = shared.addPage([595, 842]); s1.drawText('Page one private', { x: 50, y: 760, size: 20, font: sf }); s1.drawImage(png, { x: 50, y: 500, width: 200, height: 200 });
+const s2 = shared.addPage([595, 842]); s2.drawText('Page two public', { x: 50, y: 760, size: 20, font: sf });
+const resRef = shared.context.register(s1.node.Resources());
+s1.node.set(PDFName.of('Resources'), resRef); s2.node.set(PDFName.of('Resources'), resRef);
+fs.writeFileSync(dir + 'shared.pdf', await shared.save());
 fs.writeFileSync(dir + 'page.html', '<!doctype html><h1>Hello from HTML</h1><p>Converted locally.</p>');
 // 2x2 red PNG
 fs.writeFileSync(dir + 'img.png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));

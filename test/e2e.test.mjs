@@ -39,6 +39,10 @@ async function run() {
   return { buf: fs.readFileSync(await dl.path()), name: dl.suggestedFilename() };
 }
 const pdf = (buf) => PDFDocument.load(buf);
+function rawPdf(buf) {
+  const f = path.join(os.tmpdir(), `pdfhero-raw-${Math.random()}.pdf`); fs.writeFileSync(f, buf);
+  try { return execFileSync('qpdf', ['--qdf', '--object-streams=disable', '--decode-level=all', f, '-'], { maxBuffer: 1 << 28 }).toString('latin1'); } finally { fs.rmSync(f); }
+}
 const isZip = (buf) => buf[0] === 0x50 && buf[1] === 0x4b;
 function text(buf) {
   const f = path.join(os.tmpdir(), `pdfhero-test-${Math.random()}.pdf`);
@@ -114,9 +118,16 @@ test('redact: find text removes it', async () => {
   const { buf } = await run();
   assert.doesNotMatch(text(buf), /Secret/);
   // and not hiding in unreachable objects: decompress every stream and grep the raw bytes
-  const f = path.join(os.tmpdir(), `pdfhero-raw-${Date.now()}.pdf`); fs.writeFileSync(f, buf);
-  const raw = execFileSync('qpdf', ['--qdf', '--object-streams=disable', '--decode-level=all', f, '-'], { maxBuffer: 1 << 28 }).toString('latin1'); fs.rmSync(f);
-  assert.doesNotMatch(raw, /Secret|536563726574/i); // pdf-lib writes text as hex strings
+  assert.doesNotMatch(rawPdf(buf), /Secret|536563726574/i); // pdf-lib writes text as hex strings
+});
+test('redact: image shared with an untouched page does not survive', async () => {
+  assert.match(rawPdf(fs.readFileSync(FIX + 'shared.pdf')), /\/Width 2\b/); // the check can see it in the source
+  await open('redact', ['shared.pdf']); await page.waitForSelector('.stage canvas');
+  await page.fill('[aria-label="Text to find and redact"]', 'private'); await page.click('text=Mark all matches');
+  await page.waitForSelector('text=/1 match/');
+  const { buf } = await run();
+  assert.doesNotMatch(rawPdf(buf), /\/Width 2\b/);
+  assert.match(text(buf), /Page two public/);
 });
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
 test('compare visual', async () => { await open('compare', ['a.pdf', 'b.pdf']); await page.click('.seg-btn:text("Visual overlay")'); assert.ok(isZip((await run()).buf)); });
@@ -142,11 +153,15 @@ for (const [id, file] of [['word-to-pdf', 'doc.docx'], ['excel-to-pdf', 'sheet.x
   test(id, { timeout: 240e3 }, async () => { await open(id, [file]); assert.ok((await pdf((await run()).buf)).getPageCount() >= 1); });
 }
 test('html file cannot read other local files', async () => {
-  fs.writeFileSync(FIX + 'evil.html', '<!doctype html><p>visible</p><iframe src="file:///etc/hosts" width=600 height=400></iframe><script>document.write("JSRAN")</script>');
+  fs.writeFileSync(FIX + 'evil.html', '<!doctype html><header>x</header><p>visible</p><iframe src="file:///etc/hosts" width=600 height=400></iframe><script>document.write("JSRAN")</script>');
+  fs.writeFileSync(FIX + 'evil2.html', '<meta http-equiv="refresh" content="0;url=file:///etc/hosts"><p>stayed</p>');
   await open('html-to-pdf', ['evil.html']);
   const t = text((await run()).buf);
-  fs.rmSync(FIX + 'evil.html');
+  await open('html-to-pdf', ['evil2.html']);
+  const t2 = text((await run()).buf);
+  fs.rmSync(FIX + 'evil.html'); fs.rmSync(FIX + 'evil2.html');
   assert.match(t, /visible/); assert.doesNotMatch(t, /localhost|JSRAN/);
+  assert.doesNotMatch(t2, /localhost/);
 });
 for (const id of ['pdf-to-word', 'pdf-to-excel', 'pdf-to-powerpoint']) {
   test(id, { timeout: 240e3 }, async () => { await open(id, ['a.pdf']); assert.ok(isZip((await run()).buf)); });

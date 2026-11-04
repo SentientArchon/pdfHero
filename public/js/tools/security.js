@@ -1,4 +1,4 @@
-import { h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError, PDFDocument } from '../lib.js';
+import { PDFLib, h, loadPdfLib, loadPdfJs, renderPage, canvasBlob, embedImage, pdfBlob, baseName, UserError, PDFDocument } from '../lib.js';
 import { serverTool, pageLines } from './convert.js';
 import { pageEditor, applyItems } from '../editor.js';
 
@@ -71,7 +71,7 @@ export default [
       const doc = await PDFDocument.create();
       const hit = new Set(items.map((i) => i.page));
       for (let n = 1; n <= src.getPageCount(); n++) {
-        if (!hit.has(n)) { const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
+        if (!hit.has(n)) { ownUsedResources(src.getPage(n - 1)); const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
         ctx.progress(`Flattening page ${n}…`);
         const page = await js.getPage(n);
         const k = +o.dpi / 72;
@@ -134,6 +134,33 @@ export default [
     },
   },
 ];
+
+/**
+ * Give a page its own Resources holding only names its content uses, before copying it.
+ * Pages often share one Resources dict; without this, an image or font used only on a
+ * redacted page would be copied along with an untouched page and survive in the file.
+ */
+function ownUsedResources(page) {
+  const { PDFName, PDFDict, PDFArray, PDFRawStream, decodePDFRawStream } = PDFLib;
+  const ctx = page.node.context;
+  const norm = (n) => n.replace(/#([0-9a-f]{2})/gi, (_, x) => String.fromCharCode(parseInt(x, 16)));
+  const contents = ctx.lookup(page.node.get(PDFName.of('Contents')));
+  const streams = contents instanceof PDFArray ? contents.asArray().map((r) => ctx.lookup(r)) : contents ? [contents] : [];
+  let ops = '';
+  for (const st of streams) ops += new TextDecoder('latin1').decode(st instanceof PDFRawStream ? decodePDFRawStream(st).decode() : st.getContents()) + '\n';
+  const used = new Set((ops.match(/\/[^\s/[\]()<>{}%]+/g) || []).map(norm));
+  const res = page.node.Resources();
+  if (!res) return;
+  const mine = res.clone(ctx);
+  for (const cat of ['XObject', 'Font', 'ExtGState', 'Shading', 'Pattern', 'ColorSpace', 'Properties']) {
+    const d = mine.lookupMaybe(PDFName.of(cat), PDFDict);
+    if (!d) continue;
+    const kept = d.clone(ctx);
+    for (const key of kept.keys()) if (!used.has(norm(key.asString()))) kept.delete(key);
+    mine.set(PDFName.of(cat), kept);
+  }
+  page.node.set(PDFName.of('Resources'), mine);
+}
 
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
