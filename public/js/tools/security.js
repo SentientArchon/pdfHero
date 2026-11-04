@@ -183,8 +183,9 @@ function ownUsedResources(page) {
 
   // Type 3 fonts draw glyphs with CharProcs streams that use the font's own Resources.
   function ownType3(ref, depth) {
+    // Any font dict with its own Resources is trimmed, whatever its Subtype says (or how it is encoded).
     const font = ctx.lookup(ref);
-    if (!(font instanceof PDFDict) || font.get(N('Subtype'))?.asString?.() !== '/Type3') return ref;
+    if (!(font instanceof PDFDict)) return ref;
     const res = font.lookupMaybe(N('Resources'), PDFDict);
     const procs = font.lookupMaybe(N('CharProcs'), PDFDict);
     if (!res) return ref;
