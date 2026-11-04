@@ -169,6 +169,19 @@ test('redact: image in a soft-mask group does not survive', async () => {
   assert.doesNotMatch(rawPdf(buf), /\/Width 3\b/);
   assert.match(text(buf), /Masked two public/);
 });
+test('redact: links and annotations pointing at a redacted page do not pull it back in', async () => {
+  const hex = /Linked one private|4C696E6B6564206F6E652070726976617465/i;
+  assert.match(rawPdf(fs.readFileSync(FIX + 'linked.pdf')), hex);
+  await open('redact', ['linked.pdf']); await page.waitForSelector('.stage canvas');
+  await page.fill('[aria-label="Text to find and redact"]', 'private'); await page.click('text=Mark all matches');
+  await page.waitForSelector('text=/1 match/');
+  const { buf } = await run();
+  const raw = rawPdf(buf);
+  assert.doesNotMatch(raw, hex);
+  assert.equal((raw.match(/\/Type \/Page\b/g) || []).length, 2);
+  assert.match(raw, /example\.com/); // web links survive
+  assert.match(text(buf), /Linked two public/);
+});
 test('compare text', async () => { await open('compare', ['a.pdf', 'b.pdf']); const r = await run(); assert.match(r.buf.toString(), /Beta heading 1/); });
 test('compare visual', async () => { await open('compare', ['a.pdf', 'b.pdf']); await page.click('.seg-btn:text("Visual overlay")'); assert.ok(isZip((await run()).buf)); });
 test('pdf to markdown', async () => { await open('pdf-to-markdown', ['a.pdf']); assert.match((await run()).buf.toString(), /^# Alpha heading 1/m); });

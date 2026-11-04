@@ -1,5 +1,5 @@
 // Builds sample inputs for the e2e test.
-import { PDFDocument, StandardFonts, rgb, PDFName } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFName, PDFHexString, PDFString } from 'pdf-lib';
 import fs from 'node:fs';
 const dir = new URL('./fixtures/', import.meta.url).pathname;
 async function doc(n, label) {
@@ -55,6 +55,16 @@ fs.writeFileSync(dir + 'shared.pdf', await shared.save());
   res.set(PDFName.of('ExtGState'), d.context.obj({ GSm: gs }));
   p2.node.addContentStream(d.context.register(d.context.stream('q /GSm gs 0 0 1 rg 300 300 50 50 re f Q')));
   fs.writeFileSync(dir + 'smask.pdf', await d.save());
+}
+{
+  const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+  const p1 = d.addPage([595, 842]); p1.drawText('Linked one private', { x: 50, y: 760, size: 20, font: f });
+  const p2 = d.addPage([595, 842]); p2.drawText('Linked two public', { x: 50, y: 760, size: 20, font: f });
+  const link = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 700, 200, 720], Dest: [p1.ref, 'Fit'], P: p2.ref }));
+  const note = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [50, 650, 70, 670], Contents: PDFHexString.fromText('note'), P: p1.ref }));
+  const web = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [50, 600, 200, 620], A: { S: 'URI', URI: PDFString.of('https://example.com') } }));
+  p2.node.set(PDFName.of('Annots'), d.context.obj([link, note, web]));
+  fs.writeFileSync(dir + 'linked.pdf', await d.save());
 }
 fs.writeFileSync(dir + 'page.html', '<!doctype html><h1>Hello from HTML</h1><p>Converted locally.</p>');
 // 2x2 red PNG

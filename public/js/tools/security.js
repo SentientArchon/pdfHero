@@ -71,7 +71,7 @@ export default [
       const doc = await PDFDocument.create();
       const hit = new Set(items.map((i) => i.page));
       for (let n = 1; n <= src.getPageCount(); n++) {
-        if (!hit.has(n)) { ownUsedResources(src.getPage(n - 1)); const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
+        if (!hit.has(n)) { detachPage(src.getPage(n - 1)); ownUsedResources(src.getPage(n - 1)); const [p] = await doc.copyPages(src, [n - 1]); doc.addPage(p); continue; }
         ctx.progress(`Flattening page ${n}…`);
         const page = await js.getPage(n);
         const k = +o.dpi / 72;
@@ -86,6 +86,7 @@ export default [
       if (!o.meta) {
         for (const k of ['Title', 'Author', 'Subject', 'Creator']) { const v = src[`get${k}`](); if (v) doc[`set${k}`](v); }
       }
+      dropUnreachable(doc);
       return [{ name: `${baseName(f.name)}_redacted.pdf`, blob: await pdfBlob(doc) }];
     },
   },
@@ -134,6 +135,55 @@ export default [
     },
   },
 ];
+
+/**
+ * Cut every reference from a page to other pages before it is copied: copyPages follows all
+ * references, so an annotation's /P, a link's /Dest or a form field's /Parent would pull a
+ * redacted page (and its content) into the output. Links to web addresses are kept.
+ */
+function detachPage(page) {
+  const { PDFName, PDFDict, PDFArray, PDFRef } = PDFLib;
+  const N = PDFName.of; const ctx = page.node.context;
+  for (const k of ['B', 'Thumb', 'Metadata', 'StructParents', 'PieceInfo', 'AA', 'Tabs']) page.node.delete(N(k));
+  const annots = page.node.lookupMaybe(N('Annots'), PDFArray);
+  if (!annots) return;
+  const kept = ctx.obj([]);
+  for (const a of annots.asArray()) {
+    const annot = ctx.lookup(a);
+    if (!(annot instanceof PDFDict) || annot.lookupMaybe(N('Subtype'), PDFName) === N('Popup')) continue;
+    const mine = annot.clone(ctx);
+    for (const k of ['P', 'Popup', 'IRT', 'Parent', 'Dest', 'StructParent', 'AA', 'Kids', 'Opt']) mine.delete(N(k));
+    const action = mine.lookupMaybe(N('A'), PDFDict);
+    if (action && action.lookupMaybe(N('S'), PDFName) !== N('URI')) mine.delete(N('A'));
+    else if (action) mine.set(N('A'), ctx.obj({ S: 'URI', URI: action.get(N('URI')) }));
+    kept.push(a instanceof PDFRef ? ctx.register(mine) : mine);
+  }
+  page.node.set(N('Annots'), kept);
+}
+
+/**
+ * Fail closed: delete every object the new document does not reach (pdf-lib saves all objects in
+ * its context), then refuse to save if any page dict outside the page tree is still reachable.
+ */
+function dropUnreachable(doc) {
+  const { PDFDict, PDFArray, PDFRef, PDFStream, PDFName } = PDFLib;
+  const ctx = doc.context;
+  const seen = new Set();
+  const walk = (v) => {
+    if (v instanceof PDFRef) { if (seen.has(v)) return; seen.add(v); walk(ctx.lookup(v)); return; }
+    if (v instanceof PDFStream) return walk(v.dict);
+    if (v instanceof PDFDict) { for (const [, x] of v.entries()) walk(x); return; }
+    if (v instanceof PDFArray) v.asArray().forEach(walk);
+  };
+  walk(ctx.trailerInfo.Root); walk(ctx.trailerInfo.Info);
+  for (const [ref] of ctx.enumerateIndirectObjects()) if (!seen.has(ref)) ctx.delete(ref);
+  const pages = new Set(doc.getPages().map((p) => p.ref));
+  for (const [ref, obj] of ctx.enumerateIndirectObjects()) {
+    if (obj instanceof PDFDict && obj.lookupMaybe(PDFName.of('Type'), PDFName) === PDFName.of('Page') && !pages.has(ref)) {
+      throw new UserError('This PDF links its pages in a way that can’t be redacted safely. Nothing was saved.');
+    }
+  }
+}
 
 /**
  * Give a page its own Resources holding only names its content uses, before copying it.
