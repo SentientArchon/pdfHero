@@ -6,6 +6,21 @@ Your own PDF toolbox: 31 tools (merge, split, compress, OCR, convert to/from Wor
 - The page's Content-Security-Policy stops it from contacting any other site, so a file can't be sent anywhere even by mistake.
 - Nothing is stored. Close the tab and your files are gone.
 
+## Mac app (fastest)
+
+`pdfHero.app` is the same UI loaded from disk, with Ghostscript, qpdf and LibreOffice run natively. Nothing is downloaded, and the app's window is blocked from contacting any other host. Tools start instantly instead of waiting a minute for the 16 MB Ghostscript engine to download, and Word/Excel/PowerPoint convert with LibreOffice: exact layout, old `.doc/.xls/.ppt` files too, and no print dialog.
+
+Build and install:
+
+```bash
+brew install ghostscript qpdf          # native engines (LibreOffice: brew install --cask libreoffice)
+npm install
+npm run package                        # writes dist/pdfHero-darwin-arm64/pdfHero.app
+cp -R dist/pdfHero-darwin-arm64/pdfHero.app /Applications/
+```
+
+Run from source without packaging: `npm run app`. If an engine isn't installed, that tool falls back to the in-browser version. HTML to PDF still uses the sandboxed preview and the print dialog, and OCR still uses the built-in Tesseract (it's as fast as the native one).
+
 ## Use it
 
 Live at https://sentientarchon.github.io/pdfHero/ (GitHub Pages, served from the `gh-pages` branch).
@@ -27,10 +42,11 @@ npm start       # then open http://127.0.0.1:4321
 
 ```bash
 npm start &
-npm test        # 50 end-to-end checks, in headless Chrome and in WebKit (Safari)
+npm test        # 50 end-to-end checks, in headless Chrome, in WebKit (Safari), then in the Mac app
+# a packaged build: APP=$PWD/dist/pdfHero-darwin-arm64/pdfHero.app/Contents/MacOS/pdfHero BROWSER=electron node --test test/e2e.test.mjs
 ```
 
-The tests use the `qpdf` and `gs` command-line tools to inspect output files (`brew install qpdf ghostscript`). The app itself doesn't need them.
+The tests use the `qpdf` and `gs` command-line tools to inspect output files (`brew install qpdf ghostscript`). The website doesn’t need them; the Mac app uses them when present.
 
 ## Trade-offs of running in the browser
 
@@ -46,4 +62,4 @@ AI Summarizer and Translate, because they would need a cloud AI service and your
 
 ## Third-party engines
 
-Ghostscript (`@jspawn/ghostscript-wasm`) is AGPL-3.0; its source is at https://github.com/jsscheller/ghostscript-wasm and https://ghostscript.com. qpdf is Apache-2.0, Tesseract.js Apache-2.0, pdf.js Apache-2.0, pdf-lib MIT, mammoth BSD-2-Clause, PptxGenJS MIT.
+Ghostscript (`@jspawn/ghostscript-wasm`) is AGPL-3.0; its source is at https://github.com/jsscheller/ghostscript-wasm and https://ghostscript.com. qpdf is Apache-2.0, Tesseract.js Apache-2.0, pdf.js Apache-2.0, pdf-lib MIT, mammoth BSD-2-Clause, PptxGenJS MIT, Electron MIT. The Mac app runs your installed Ghostscript, qpdf and LibreOffice as separate programs.

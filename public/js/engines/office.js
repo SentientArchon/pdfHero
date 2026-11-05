@@ -1,6 +1,15 @@
 // Word / Excel / PowerPoint / HTML -> printable HTML, shown in a locked-down frame and saved with the
 // browser's own "Save as PDF". Everything is parsed here; nothing leaves the device.
-import { h, VENDOR, UserError, bytesOf } from '../lib.js';
+import { h, VENDOR, UserError, bytesOf, NATIVE } from '../lib.js';
+
+/** Desktop app: LibreOffice converts the file itself, layout intact. Returns null on the website (use the print preview). */
+export async function officePdf(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!NATIVE?.has.soffice || /^html?$/.test(ext)) return null; // HTML stays in the sandboxed frame: LibreOffice would fetch its links
+  try { return await NATIVE.office(await bytesOf(file), ext); } catch (e) { throw new UserError(e.message.replace(/^.*?remote method 'office': (Error: )?/, '')); }
+}
+/** Extra file types LibreOffice can read (old Office and OpenDocument formats). */
+export const officeAccept = (types) => (NATIVE?.has.soffice ? `${types},${{ docx: '.doc,.odt,.rtf', xlsx: '.xls,.ods', pptx: '.ppt,.odp' }[types.split(',')[0].slice(1)]}` : types);
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const loadScript = (src, global) => (window[global] ? Promise.resolve() : new Promise((ok, fail) => {

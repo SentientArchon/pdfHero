@@ -6,11 +6,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { chromium, webkit } from 'playwright-core';
+import { chromium, webkit, _electron } from 'playwright-core';
+import electronPath from 'electron';
 import { PDFDocument } from 'pdf-lib';
 
-const BASE = process.env.BASE || 'http://127.0.0.1:4321/';
+const ELECTRON = process.env.BROWSER === 'electron'; // the desktop app, with native gs/qpdf/LibreOffice
+const BASE = ELECTRON ? 'app://pdfhero/index.html' : process.env.BASE || 'http://127.0.0.1:4321/';
+const ORIGIN = ELECTRON ? 'app://pdfhero/' : BASE;
 const WEBKIT = process.env.BROWSER === 'webkit'; // Safari's engine
+const DL = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfhero-dl-')); // the app saves downloads here instead of asking
 // Older Safari lacks the newest JS built-ins; remove them so the tests prove the site copes without.
 const OLD_SAFARI = () => { for (const [o, k] of [[Map.prototype, 'getOrInsert'], [Map.prototype, 'getOrInsertComputed'], [WeakMap.prototype, 'getOrInsertComputed'], [Math, 'sumPrecise'], [Uint8Array, 'fromBase64'], [Uint8Array.prototype, 'toHex']]) delete o[k]; };
 const FIX = new URL('./fixtures/', import.meta.url).pathname;
@@ -18,17 +22,24 @@ let browser; let page; const errors = [];
 
 before(async () => {
   execFileSync('node', [new URL('./make-fixtures.mjs', import.meta.url).pathname]);
-  browser = WEBKIT ? await webkit.launch() : await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 1000 } });
-  if (!WEBKIT) await context.grantPermissions(['local-fonts']); // Edit PDF reads installed fonts with permission (Chrome only)
-  if (WEBKIT) await context.addInitScript(OLD_SAFARI);
-  page = await context.newPage();
+  if (ELECTRON) {
+    // APP=/path/to/pdfHero.app/Contents/MacOS/pdfHero tests a packaged build instead of the source folder
+    browser = await _electron.launch({ executablePath: process.env.APP || electronPath, args: process.env.APP ? [] : [new URL('..', import.meta.url).pathname], env: { ...process.env, PDFHERO_DOWNLOADS: DL } });
+    page = await browser.firstWindow();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  } else {
+    browser = WEBKIT ? await webkit.launch() : await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+    const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 1000 } });
+    if (!WEBKIT) await context.grantPermissions(['local-fonts']); // Edit PDF reads installed fonts with permission (Chrome only)
+    if (WEBKIT) await context.addInitScript(OLD_SAFARI);
+    page = await context.newPage();
+  }
   page.on('pageerror', (e) => errors.push(e.message));
   // count requests that actually reached a server (a CSP-blocked attempt still fires 'request', but gets no response)
-  page.on('response', (r) => { if (!r.url().startsWith(BASE.slice(0, -1)) && !/^(blob|data):/.test(r.url())) errors.push(`outside request: ${r.url()}`); });
+  page.on('response', (r) => { if (!r.url().startsWith(ORIGIN.slice(0, -1)) && !/^(blob|data):/.test(r.url())) errors.push(`outside request: ${r.url()}`); });
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 });
-after(async () => { await browser?.close(); });
+after(async () => { await browser?.close(); fs.rmSync(DL, { recursive: true, force: true }); });
 
 async function open(id, files = []) {
   await page.goto(`${BASE}#/`); // force a fresh hashchange even when the tool is the same
@@ -42,8 +53,24 @@ async function run() {
   await page.waitForSelector('.result .done, .result .alert.err', { timeout: 180e3 });
   const err = await page.$('.result .alert.err');
   if (err) throw new Error(await err.textContent());
+  if (ELECTRON) return appDownload(() => page.click('.result .done button.btn.primary'));
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('.result .done button.btn.primary')]);
   return { buf: fs.readFileSync(await dl.path()), name: dl.suggestedFilename() };
+}
+// Playwright gets no download events from Electron: wait for the saved file to appear and stop growing.
+async function appDownload(click) {
+  for (const f of fs.readdirSync(DL)) fs.rmSync(path.join(DL, f));
+  await click();
+  let last = -1;
+  for (let i = 0; i < 600; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const [name] = fs.readdirSync(DL).filter((f) => !f.endsWith('.crdownload'));
+    if (!name) continue;
+    const size = fs.statSync(path.join(DL, name)).size;
+    if (size && size === last) return { buf: fs.readFileSync(path.join(DL, name)), name };
+    last = size;
+  }
+  throw new Error('No download.');
 }
 const pdf = (buf) => PDFDocument.load(buf);
 function rawPdf(buf) {
@@ -242,11 +269,12 @@ async function preview() {
   return frame.locator('body').innerText();
 }
 for (const [id, file, want] of [['word-to-pdf', 'doc.docx', /Hello Word document/], ['excel-to-pdf', 'sheet.xlsx', /a\s+b[\s\S]*1\s+2/], ['powerpoint-to-pdf', 'deck.pptx', /Slide one/], ['html-to-pdf', 'page.html', /Hello from HTML/]]) {
-  test(id, async () => { await open(id, [file]); assert.match(await preview(), want); });
+  // the app converts Office files with LibreOffice straight to PDF; HTML still goes through the sandboxed preview
+  test(id, async () => { await open(id, [file]); assert.match(ELECTRON && id !== 'html-to-pdf' ? text((await run()).buf) : await preview(), want); });
 }
 test('excel-to-pdf: csv', async () => {
   fs.writeFileSync(FIX + 'data.csv', 'name,qty\n"Smith, Ann",3\n'); await open('excel-to-pdf', ['data.csv']);
-  const t = await preview(); fs.rmSync(FIX + 'data.csv'); assert.match(t, /Smith, Ann\s+3/);
+  const t = ELECTRON ? text((await run()).buf) : await preview(); fs.rmSync(FIX + 'data.csv'); assert.match(t, /Smith, Ann\s+3/);
 });
 test('html file: no scripts, no local files, no outside loads', async () => {
   fs.writeFileSync(FIX + 'evil.html', '<!doctype html><header>x</header><p>visible</p><iframe src="file:///etc/hosts"></iframe><img src="https://example.com/x.png"><script>document.write("JSRAN")</script>');

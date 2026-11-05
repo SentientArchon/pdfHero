@@ -1,6 +1,6 @@
 import { h, PDFDocument, pdfBlob, embedImage, baseName, UserError, loadPdfJs, renderPage, canvasBlob, sizeLabel, parseRanges, bytesOf } from '../lib.js';
 import { gs, qpdf, COMPRESS, pdfa, ocrPdf, OCR_LANGS, pdfToDocx, pdfToXlsx, pdfToPptx } from '../engines/pdf-engines.js';
-import { printFrame, docxHtml, sheetHtml, pptxHtml, htmlFile } from '../engines/office.js';
+import { printFrame, officePdf, officeAccept, docxHtml, sheetHtml, pptxHtml, htmlFile } from '../engines/office.js';
 
 const MIME = { pdf: 'application/pdf' };
 /** A tool that handles each chosen file on its own with `convert(file, opts, ctx) -> Blob | bytes`. */
@@ -26,6 +26,8 @@ function printTool({ make, ...def }) {
     ...def,
     async run([f], o, ctx) {
       ctx.progress('Laying out the document…');
+      const pdf = await officePdf(f);
+      if (pdf) return [{ name: `${baseName(f.name)}.pdf`, blob: new Blob([pdf], { type: 'application/pdf' }) }];
       const html = await make(f, o);
       const frame = printFrame(html, `Preview of ${f.name}`);
       return [{ name: `${baseName(f.name)}.pdf`, print: frame, view: h('div', { class: 'print-wrap' }, frame) }];
@@ -96,11 +98,11 @@ export default [
       return Promise.all(files.map(async (f) => ({ name: `${baseName(f.name)}.pdf`, blob: await make([f]) })));
     },
   },
-  printTool({ id: 'word-to-pdf', cat: 'to', icon: 'W', name: 'Word to PDF', action: 'Convert', accept: '.docx', make: docxHtml,
+  printTool({ id: 'word-to-pdf', cat: 'to', icon: 'W', name: 'Word to PDF', action: 'Convert', accept: officeAccept('.docx'), make: docxHtml,
     desc: 'Turn a Word document (.docx) into a PDF: text, headings, lists, tables and pictures. Complex layouts are simplified.' }),
-  printTool({ id: 'powerpoint-to-pdf', cat: 'to', icon: 'P', name: 'PowerPoint to PDF', action: 'Convert', accept: '.pptx', make: pptxHtml,
+  printTool({ id: 'powerpoint-to-pdf', cat: 'to', icon: 'P', name: 'PowerPoint to PDF', action: 'Convert', accept: officeAccept('.pptx'), make: pptxHtml,
     desc: 'Turn a presentation (.pptx) into a PDF, one page per slide: text boxes and pictures where they sit. Themes and effects are simplified.' }),
-  printTool({ id: 'excel-to-pdf', cat: 'to', icon: 'X', name: 'Excel to PDF', action: 'Convert', accept: '.xlsx,.csv', make: sheetHtml,
+  printTool({ id: 'excel-to-pdf', cat: 'to', icon: 'X', name: 'Excel to PDF', action: 'Convert', accept: officeAccept('.xlsx,.csv'), make: sheetHtml,
     desc: 'Turn a spreadsheet (.xlsx or .csv) into a PDF, one table per sheet. Cell formatting and charts are not kept.' }),
   printTool({ id: 'html-to-pdf', cat: 'to', icon: '⟨⟩', name: 'HTML to PDF', action: 'Convert', accept: '.html,.htm', make: htmlFile,
     desc: 'Save an HTML file as a PDF. Scripts don’t run and nothing outside the file is loaded.' }),

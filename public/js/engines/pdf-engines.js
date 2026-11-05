@@ -1,5 +1,5 @@
 // In-browser replacements for the old local helper: Ghostscript, qpdf, Tesseract and file-format writers.
-import { runWasm, UserError, VENDOR, PDFLib, loadPdfLib, loadPdfJs, renderPage, canvasBlob, h } from '../lib.js';
+import { runWasm, NATIVE, UserError, VENDOR, PDFLib, loadPdfLib, loadPdfJs, renderPage, canvasBlob, h } from '../lib.js';
 import { pageLines } from '../tools/convert.js';
 
 const tail = (log) => log.filter(Boolean).slice(-3).join(' ').slice(0, 300);
@@ -31,7 +31,7 @@ export const COMPRESS = { low: '/printer', recommended: '/ebook', extreme: '/scr
 const PDFA_DEF = `%!
 [/_objdef {icc_PDFA} /type /stream /OBJ pdfmark
 [{icc_PDFA} <</N 3>> /PUT pdfmark
-[{icc_PDFA} (%rom%iccprofiles/srgb.icc) (r) file /PUT pdfmark
+[{icc_PDFA} (${(NATIVE?.has.gs && NATIVE.has.icc) || '%rom%iccprofiles/srgb.icc'}) (r) file /PUT pdfmark
 [/_objdef {OutputIntent_PDFA} /type /dict /OBJ pdfmark
 [{OutputIntent_PDFA} <</Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile {icc_PDFA} /OutputConditionIdentifier (sRGB)>> /PUT pdfmark
 [{Catalog} <</OutputIntents [ {OutputIntent_PDFA} ]>> /PUT pdfmark

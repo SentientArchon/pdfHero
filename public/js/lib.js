@@ -9,6 +9,8 @@ export { pdfjs, PDFLib };
 export const { PDFDocument, degrees, rgb, StandardFonts } = PDFLib;
 
 export class UserError extends Error {}
+/** Set by the desktop app (app/preload.cjs); undefined on the website. */
+export const NATIVE = globalThis.pdfheroNative;
 
 // ---------- DOM ----------
 export function h(tag, attrs = {}, ...kids) {
@@ -158,6 +160,7 @@ export async function zip(results, name) {
  * `outputs` read back after. A fresh worker per job keeps memory from piling up.
  */
 export function runWasm(engine, args, files, outputs) {
+  if (NATIVE?.has[engine]) return NATIVE.run(engine, args, files, outputs); // desktop app: the real binaries, same contract
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL('./engines/wasm-worker.js', import.meta.url));
     w.onmessage = ({ data }) => { w.terminate(); data.error ? reject(new Error(data.error)) : resolve(data); };

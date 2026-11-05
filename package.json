@@ -5,8 +5,10 @@
   "scripts": {
     "build": "node scripts/vendor.mjs",
     "start": "node scripts/vendor.mjs && node server.js",
-    "test": "node --test test/e2e.test.mjs && BROWSER=webkit node --test test/e2e.test.mjs",
-    "deploy": "node scripts/deploy.mjs"
+    "test": "node --test test/e2e.test.mjs && BROWSER=webkit node --test test/e2e.test.mjs && BROWSER=electron node --test test/e2e.test.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "app": "node scripts/vendor.mjs && electron .",
+    "package": "node scripts/vendor.mjs && electron-packager . pdfHero --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=io.github.sentientarchon.pdfhero --ignore='^/(?!(app|public)(/|$)|package[.]json$)'"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +28,9 @@
   },
   "private": true,
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.2.1",
     "playwright-core": "^1.64.1"
-  }
+  },
+  "main": "app/main.cjs"
 }
