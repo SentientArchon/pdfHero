@@ -103,7 +103,7 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
   function editRun(r) {
     const size = r.size;
     add({ type: 'text', run: r.key, x: r.box.x - 2, y: r.baseline - size * 1.05, w: r.box.w + 8, h: size * 1.3, text: r.str,
-      color: r.color, size, font: r.font, srcFont: r.src ? { ...r.src, sample: r.str } : null, cover: { ...r.box, x: r.box.x - 1, w: r.box.w + 2, bg: r.bg } });
+      color: r.color, size, font: r.font, underline: r.underline, srcFont: r.src ? { ...r.src, sample: r.str } : null, cover: { ...r.box, x: r.box.x - 1, w: r.box.w + 2, bg: r.bg } });
     draw();
     const t = overlay.querySelector('.selected .item-text');
     t.focus(); document.getSelection().selectAllChildren(t);
@@ -133,7 +133,7 @@ export function pageEditor(file, { tools, defaultTool, onChange = () => {}, tool
     });
     if (it.type === 'text') {
       const t = h('div', { class: 'item-text', contenteditable: 'plaintext-only', spellcheck: 'false',
-        style: { color: it.color, fontSize: `${it.size * s}px`, ...previewFont(it) } }, it.text);
+        style: { color: it.color, fontSize: `${it.size * s}px`, ...previewFont(it), textDecoration: it.underline ? 'underline' : 'none' } }, it.text);
       t.addEventListener('input', () => { it.text = t.innerText; noteFont(it); it.w = Math.max(it.w, t.scrollWidth / s); it.h = Math.max(it.size * 1.3, t.scrollHeight / s); onChange(state.items); });
       t.addEventListener('pointerdown', (e) => { e.stopPropagation(); select(it, false); noteFont(it); });
       el.append(h('span', { class: 'item-grip', title: 'Drag to move', 'aria-hidden': 'true' }), t);
@@ -263,9 +263,11 @@ export async function applyItems(doc, items) {
         if (!fonts.kit) { doc.registerFontkit(window.fontkit); fonts.kit = true; }
         font = (fonts[r.key] ||= await doc.embedFont(r.bytes, { subset: false }));
       } else font = (fonts[it.font] ||= await doc.embedFont(StandardFonts[it.font] || StandardFonts.Helvetica));
-      it.text.split('\n').forEach((line, i) => page.drawText(r.bytes ? line : safeText(font, line), {
-        x: X(it.x + 2), y: Y(it.y + it.size * (1.05 + i * 1.2)), size: it.size, font, color: hexToRgb(it.color),
-      }));
+      const lines = it.text.split('\n').map((line) => (r.bytes ? line : safeText(font, line)));
+      lines.forEach((line, i) => page.drawText(line, { x: X(it.x + 2), y: Y(it.y + it.size * (1.05 + i * 1.2)), size: it.size, font, color: hexToRgb(it.color) }));
+      // the cover hid the original underline: draw it again under the new first line
+      const u = it.underline;
+      if (u) page.drawRectangle({ x: X(it.x + 2), y: Y(it.y + it.size * 1.05 + u.dy + u.h), width: font.widthOfTextAtSize(lines[0], it.size), height: u.h, color: hexToRgb(it.color) });
     }
     if (it.type === 'image') {
       const img = await embedImage(doc, it.blob);
@@ -325,8 +327,21 @@ async function textRuns(page, vp, canvas, k) {
     if (trimmed.length < r.str.length) r.box.w = Math.max(r.box.w * 0.5, r.box.w - (r.str.length - trimmed.length) * r.size * 0.22);
     r.str = trimmed;
     Object.assign(r, sampleColours(g, r.box, k));
+    r.underline = findUnderline(g, r, k);
   }
   return runs.filter((r) => r.str.trim());
+}
+
+/** A drawn underline: rows just below the baseline that are ink across ~all of the run's width (descenders never are). */
+function findUnderline(g, r, k) {
+  const x0 = Math.max(0, Math.floor(r.box.x * k)); const w = Math.max(1, Math.min(g.canvas.width - x0, Math.ceil(r.box.w * k)));
+  const bg = [1, 3, 5].map((i) => parseInt(r.bg.slice(i, i + 2), 16)); const rows = [];
+  for (let y = Math.ceil(r.baseline * k); y <= Math.min(g.canvas.height - 1, Math.floor((r.baseline + r.size * 0.3) * k)); y++) {
+    const d = g.getImageData(x0, y, w, 1).data; let ink = 0;
+    for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 150) ink++;
+    if (ink > w * 0.9) rows.push(y); else if (rows.length) break;
+  }
+  return rows.length ? { dy: rows[0] / k - r.baseline, h: rows.length / k } : null; // relative to the baseline, so it follows a moved box
 }
 
 /** Background = median of pixels around the box; text = the pixel inside it farthest from that. */
@@ -360,7 +375,8 @@ async function kit(key, getBytes) {
   }
   return kitCache.get(key);
 }
-const covers = (k, text) => [...text].every((ch) => /\s/.test(ch) || k.font.hasGlyphForCodePoint(ch.codePointAt(0)));
+// spaces count too: Word's subsets usually have no space glyph, and pdf-lib would draw .notdef boxes instead
+const covers = (k, text) => [...text].every((ch) => ch === '\n' || k.font.hasGlyphForCodePoint(ch.codePointAt(0)));
 
 /**
  * 1. the font embedded in the PDF, if it maps the original text correctly and has every new letter
@@ -373,7 +389,8 @@ export async function resolveFont(it) {
   const bare = src.name.replace(/^[A-Z]{6}\+/, '').replace(/-\d{3,6}$/, ''); // "ABCDEF+Georgia", "Georgia-9742" (pdf-lib)
   if (src.data) {
     const k = await kit(`pdf:${src.loadedName}`, () => src.data);
-    if (k && covers(k, src.sample) && covers(k, it.text)) return { key: `pdf:${src.loadedName}`, bytes: k.bytes, label: `Font: ${bare} (from this PDF)` };
+    // the original text (minus spaces, which pdf.js drops) checks the mapping; the new text needs every glyph
+    if (k && covers(k, src.sample.replace(/\s/g, '')) && covers(k, it.text)) return { key: `pdf:${src.loadedName}`, bytes: k.bytes, label: `Font: ${bare} (from this PDF)` };
   }
   const k = await kit(`sys:${bare}`, () => installedFont(bare));
   if (k && covers(k, it.text)) return { key: `sys:${bare}`, bytes: k.bytes, label: `Font: ${bare} (installed on this device${src.data ? '; the PDF’s copy lacks some letters' : ''})` };

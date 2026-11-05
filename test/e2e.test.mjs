@@ -23,8 +23,9 @@ let browser; let page; const errors = [];
 before(async () => {
   execFileSync('node', [new URL('./make-fixtures.mjs', import.meta.url).pathname]);
   if (ELECTRON) {
+    // own profile, so a pdfHero window the user has open doesn't block the test copy
     // APP=/path/to/pdfHero.app/Contents/MacOS/pdfHero tests a packaged build instead of the source folder
-    browser = await _electron.launch({ executablePath: process.env.APP || electronPath, args: process.env.APP ? [] : [new URL('..', import.meta.url).pathname], env: { ...process.env, PDFHERO_DOWNLOADS: DL } });
+    browser = await _electron.launch({ executablePath: process.env.APP || electronPath, args: [...(process.env.APP ? [] : [new URL('..', import.meta.url).pathname]), `--user-data-dir=${DL}-profile`], env: { ...process.env, PDFHERO_DOWNLOADS: DL } });
     page = await browser.firstWindow();
     await page.setViewportSize({ width: 1440, height: 1000 });
   } else {
@@ -39,7 +40,7 @@ before(async () => {
   page.on('response', (r) => { if (!r.url().startsWith(ORIGIN.slice(0, -1)) && !/^(blob|data):/.test(r.url())) errors.push(`outside request: ${r.url()}`); });
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 });
-after(async () => { await browser?.close(); fs.rmSync(DL, { recursive: true, force: true }); });
+after(async () => { await browser?.close(); fs.rmSync(DL, { recursive: true, force: true }); fs.rmSync(`${DL}-profile`, { recursive: true, force: true }); });
 
 async function open(id, files = []) {
   await page.goto(`${BASE}#/`); // force a fresh hashchange even when the tool is the same
@@ -147,6 +148,20 @@ test('edit: change existing text', async () => {
   // the replacement is drawn at the original's 28pt size: 5 original headings + 1 new
   assert.equal((rawPdf(buf).match(/ 28 Tf/g) || []).length, 6);
 });
+test('edit: an underline under edited text is drawn again', async () => {
+  await open('edit-pdf', ['underline.pdf']); await page.waitForSelector('.text-hit');
+  await page.click('[aria-label="Edit text: Underlined title"]');
+  await page.keyboard.press('ArrowRight'); await page.keyboard.type(' v2');
+  const { buf } = await run();
+  assert.match(text(buf), /Underlined title v2/);
+  // at 144 dpi the underline sits ~2 pt under the baseline (842-757 pt from the top); the new " v2" must be underlined too
+  const f = path.join(os.tmpdir(), `pdfhero-ul-${Math.random()}.pdf`); fs.writeFileSync(f, buf);
+  const pgm = execFileSync('gs', ['-q', '-sDEVICE=pgmraw', '-r144', '-o', '-', f], { maxBuffer: 1 << 24 }); fs.rmSync(f);
+  const w = 1190; const body = pgm.subarray(pgm.length - w * 1684); // A4 at 144 dpi; the pixels are the file's tail
+  const ink = (y, x0, x1) => { let n = 0; for (let x = x0; x < x1; x++) n += body[y * w + x] < 128; return n / (x1 - x0); };
+  const new0 = Math.ceil((50 + (await PDFDocument.create().then((d) => d.embedFont('Times-Bold'))).widthOfTextAtSize('Underlined title', 18)) * 2) + 4;
+  assert.ok([166, 167, 168, 169, 170, 171].some((y) => ink(y, new0, new0 + 30) > 0.9), 'no underline under the added text');
+});
 test('edit: removing an edit restores the original', async () => {
   await open('edit-pdf', ['a.pdf']); await page.waitForSelector('.text-hit');
   await page.click('[aria-label="Edit text: Alpha heading 1"]');
@@ -157,14 +172,14 @@ test('edit: removing an edit restores the original', async () => {
 test('edit: replacement text uses the document\'s own font', { skip: !fs.existsSync('/System/Library/Fonts/Supplemental/Georgia.ttf') }, async () => {
   await open('edit-pdf', ['georgia.pdf']); await page.waitForSelector('.text-hit');
   await page.click('[aria-label="Edit text: Georgia sample line"]');
-  await page.keyboard.type('sample line');            // letters all in the PDF's subset
+  await page.keyboard.type('sample');                 // letters all in the PDF's subset (no space: pdf.js drops the space glyph)
   await page.waitForFunction(() => /from this PDF/.test(document.querySelector('.font-note').textContent));
   await page.keyboard.press('End'); await page.keyboard.type(' Ωxyz ñ');  // not in the subset -> installed copy
   // Safari can't read installed fonts (no Local Font Access API), so there it falls back to a standard font
   await page.waitForFunction((wk) => (wk ? /standard stand-in/ : /installed on this device/).test(document.querySelector('.font-note').textContent), WEBKIT);
   const { buf } = await run();
   if (WEBKIT) return; // Times stand-in can't draw Ω; covered in Chrome
-  assert.match(text(buf), /sample line Ωxyz ñ/);
+  assert.match(text(buf), /sample Ωxyz ñ/);
   assert.match(rawPdf(buf), /\/BaseFont \/\S*Georgia/);
   assert.doesNotMatch(rawPdf(buf), /\/BaseFont \/Helvetica/);
 });

@@ -18,6 +18,11 @@ const form = await doc(1, 'Form'); const fm = form.getForm();
 fm.createTextField('full_name').addToPage(form.getPage(0), { x: 50, y: 300, width: 200, height: 24 });
 fm.createCheckBox('agree').addToPage(form.getPage(0), { x: 50, y: 260, width: 16, height: 16 });
 fs.writeFileSync(dir + 'form.pdf', await form.save());
+// A title with a drawn underline (as Word makes them): a thin rectangle just below the baseline.
+const ul = await PDFDocument.create(); const tb = await ul.embedFont(StandardFonts.TimesRomanBold);
+const ulp = ul.addPage([595, 842]); ulp.drawText('Underlined title', { x: 50, y: 760, size: 18, font: tb });
+ulp.drawRectangle({ x: 50, y: 757, width: tb.widthOfTextAtSize('Underlined title', 18), height: 1.2, color: rgb(0, 0, 0) });
+fs.writeFileSync(dir + 'underline.pdf', await ul.save());
 // Two pages sharing one Resources dict; the 2x2 image is only drawn on page 1.
 const shared = await PDFDocument.create(); const sf = await shared.embedFont(StandardFonts.Helvetica);
 const png = await shared.embedPng(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));

@@ -38,7 +38,14 @@ const NAME = /^\/[\w.-]+$/;
 function argOk(engine, a, names) {
   if (names.includes(a)) return true;
   if (engine === 'gs') return a === '-dSAFER' || /^-d[A-Za-z]+(=[\w./]+)?$/.test(a) && !/SAFER/i.test(a) || /^-s(DEVICE|ColorConversionStrategy|ProcessColorModel)=\w+$/.test(a) || names.some((n) => a === `-sOutputFile=${n}`);
-  return !a.startsWith('@') && (!a.startsWith('-') || /^(--|--encrypt|--decrypt|--password=.*)$/.test(a)); // qpdf: passwords and key length are positional
+  return false;
+}
+// qpdf: only the three calls the tools make, input and output always last. Passwords sit only where qpdf reads passwords.
+function qpdfOk(args) {
+  const pre = args.slice(0, -2); const pw = (p) => !/^[-@]/.test(p);
+  return args.slice(-2).join('\n') === '/in.pdf\n/out.pdf' && (!pre.length || (pre.length === 1 && pre[0] === '--decrypt')
+    || (pre.length === 2 && /^--password=[^@]/s.test(pre[0]) && pre[1] === '--decrypt')
+    || (pre.length === 5 && pre[0] === '--encrypt' && pw(pre[1]) && pw(pre[2]) && pre[3] === '256' && pre[4] === '--'));
 }
 
 // Same contract as the WASM worker: virtual files like "/in.pdf" are mapped into a private temp folder.
@@ -46,12 +53,13 @@ ipcMain.handle('run', (e, engine, args, files, outputs) => {
   if (!['gs', 'qpdf'].includes(engine) || !BIN[engine]) throw new Error(`${engine} is not installed.`);
   const names = [...Object.keys(files), ...outputs];
   if (!names.every((n) => NAME.test(n)) || !args.every((a) => typeof a === 'string')) throw new Error('Bad engine call.');
-  if (!args.every((a) => argOk(engine, a, names))) throw new Error('Bad engine call.');
+  if (engine === 'gs' ? !args.every((a) => argOk(engine, a, names)) : !qpdfOk(args)) throw new Error('Bad engine call.');
   if (engine === 'gs') args = ['-dSAFER', ...args];
   return inTemp(async (dir) => {
     const real = (n) => path.join(dir, n.slice(1));
     for (const [n, bytes] of Object.entries(files)) await fs.writeFile(real(n), bytes);
-    const mapped = args.map((a) => { const n = names.find((v) => a === v || a === `-sOutputFile=${v}`); return n ? a.slice(0, -n.length) + real(n) : a; });
+    const mapped = args.map((a, i) => { if (engine === 'qpdf' && i < args.length - 2) return a; // passwords are never paths
+       const n = names.find((v) => a === v || a === `-sOutputFile=${v}`); return n ? a.slice(0, -n.length) + real(n) : a; });
     const r = await exec(BIN[engine], mapped, { cwd: dir });
     const out = {};
     for (const n of outputs) { try { out[n] = await fs.readFile(real(n)); } catch { /* not produced */ } }
@@ -67,7 +75,8 @@ ipcMain.handle('office', (e, bytes, ext) => {
     const input = path.join(dir, `in.${ext}`);
     await fs.writeFile(input, bytes);
     const profile = pathToFileURL(path.join(app.getPath('userData'), 'libreoffice')).href;
-    const r = await exec(BIN.soffice, ['--headless', '--norestore', `-env:UserInstallation=${profile}`, '--convert-to', 'pdf', '--outdir', dir, input], { timeout: 10 * 60e3 });
+    // sandboxed with no outbound network: a document's linked images or OLE links can't call out
+    const r = await exec('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)(deny network-outbound (remote ip))', BIN.soffice, '--headless', '--norestore', `-env:UserInstallation=${profile}`, '--convert-to', 'pdf', '--outdir', dir, input], { timeout: 10 * 60e3 });
     try { return await fs.readFile(path.join(dir, 'in.pdf')); } catch { throw new Error(`LibreOffice couldn’t convert this file. ${r.log.slice(-2).join(' ')}`); }
   });
 });
@@ -86,7 +95,7 @@ app.whenReady().then(() => {
 
   const win = new BrowserWindow({
     width: 1280, height: 900, title: 'pdfHero',
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, backgroundThrottling: false }, // jobs keep full speed while the window is hidden
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('app://')) e.preventDefault(); });
